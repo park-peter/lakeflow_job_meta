@@ -84,10 +84,9 @@ transformation_config:
 ├── lakeflow_job_meta/    # Main package
 ├── examples/              # Example files and templates
 │   ├── orchestrator_example.ipynb  # Orchestrator example
-│   ├── sql_query_task/   # SQL query task examples
 │   ├── sql_file_task/    # SQL file task examples
 │   ├── notebook_task/   # Notebook task examples
-│   └── metadata_examples.yaml
+│   └── metadata_examples.yaml  # Example metadata
 ├── docs/                 # Documentation
 └── tests/               # Tests
 ```

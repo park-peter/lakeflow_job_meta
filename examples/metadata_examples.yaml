@@ -4,70 +4,65 @@
 metadata_version: "1.0"
 
 modules:
-  # Example 1: SQL Query Task - Inline SQL Query
+  # Example 1: SQL Query Task
   - module_name: "data_quality_checks"
-    description: "Daily data quality validations using inline SQL queries"
+    description: "Simple data quality validation using inline SQL query (no table dependencies)"
     sources:
-      - source_id: "check_null_rates"
+      - source_id: "simple_quality_check"
         source_type: "sql"
         execution_order: 1
         transformation_config:
           task_type: "sql_query"
           sql_task:
             sql_query: |
-              WITH null_analysis AS (
-                SELECT 
-                  COUNT(*) as total_rows,
-                  SUM(CASE WHEN customer_id IS NULL THEN 1 ELSE 0 END) as null_customer_id,
-                  SUM(CASE WHEN email IS NULL THEN 1 ELSE 0 END) as null_email
-                FROM bronze.customers
-                WHERE date = CURRENT_DATE()
-              )
               SELECT 
-                total_rows,
-                ROUND(null_customer_id * 100.0 / NULLIF(total_rows, 0), 2) as customer_id_null_pct,
-                ROUND(null_email * 100.0 / NULLIF(total_rows, 0), 2) as email_null_pct,
+                CURRENT_TIMESTAMP() as check_timestamp,
+                'data_quality_check' as check_name,
+                CAST(5.0 AS DOUBLE) as threshold_value,
                 CASE 
-                  WHEN customer_id_null_pct > CAST('${threshold}' AS DOUBLE) THEN 'FAIL'
-                  WHEN email_null_pct > CAST('${threshold}' AS DOUBLE) THEN 'FAIL'
-                  ELSE 'PASS'
-                END as quality_status
-              FROM null_analysis
-            parameters:
-              threshold: "5.0"
+                  WHEN CAST(5.0 AS DOUBLE) <= 5.0 THEN 'PASS'
+                  ELSE 'FAIL'
+                END as quality_status,
+                'Example validation check' as description
 
-  # Example 2: SQL File Tasks - Transformations
-  - module_name: "bronze_to_silver"
-    description: "Transform bronze data to silver layer using SQL files"
+  # Example 2: SQL File Tasks
+  - module_name: "sales_pipeline"
+    description: "Create sample data, then transform and aggregate using SQL files"
     sources:
-      - source_id: "customers_transformation"
+      - source_id: "create_sample_data"
         source_type: "sql"
         execution_order: 1
         transformation_config:
           task_type: "sql_file"
           sql_task:
-            sql_file_path: "/Workspace/examples/sql_file_task/03_bronze_to_silver_transformation.sql"
-            parameters: {}
+            sql_file_path: "/Workspace/Users/peter.park@databricks.com/lakeflow_job_meta/examples/sql_file_task/01_create_sample_data.sql"
+            parameters:
+              catalog: "fe_ppark_demo"
+              schema: "lakeflow_job_metadata"
       
-      - source_id: "sales_transformation"
+      - source_id: "transform_to_silver"
         source_type: "sql"
-        execution_order: 1  # Parallel with customers
+        execution_order: 2
         transformation_config:
           task_type: "sql_file"
           sql_task:
-            sql_file_path: "/Workspace/examples/sql_file_task/05_incremental_load.sql"
-            parameters: {}
+            sql_file_path: "/Workspace/Users/peter.park@databricks.com/lakeflow_job_meta/examples/sql_file_task/03_bronze_to_silver_transformation.sql"
+            parameters:
+              catalog: "fe_ppark_demo"
+              schema: "lakeflow_job_metadata"
       
-      - source_id: "sales_aggregation"
+      - source_id: "daily_aggregations"
         source_type: "sql"
-        execution_order: 2  # Depends on sales_transformation
+        execution_order: 3  # Depends on transform_to_silver
         transformation_config:
           task_type: "sql_file"
           sql_task:
-            sql_file_path: "/Workspace/examples/sql_file_task/02_daily_aggregations.sql"
-            parameters: {}
+            sql_file_path: "/Workspace/Users/peter.park@databricks.com/lakeflow_job_meta/examples/sql_file_task/02_daily_aggregations.sql"
+            parameters:
+              catalog: "fe_ppark_demo"
+              schema: "lakeflow_job_metadata"
 
-  # Example 3: Mixed Task Types - Notebook + SQL
+  # Example 3: Mixed Task Types
   - module_name: "ingestion_and_validation"
     description: "Ingest data via notebook, then validate with SQL"
     sources:
@@ -75,32 +70,30 @@ modules:
         source_type: "delta_table"
         execution_order: 1
         source_config:
-          catalog: "bronze"
-          schema: "raw_data"
+          catalog: "fe_ppark_demo"
+          schema: "lakeflow_job_metadata"
           table: "source_customers"
         target_config:
-          catalog: "bronze"
-          schema: "raw_data"
+          catalog: "fe_ppark_demo"
+          schema: "lakeflow_job_metadata"
           table: "customers"
           write_mode: "append"
         transformation_config:
           task_type: "notebook"
-          notebook_path: "/Workspace/examples/notebook_task/sample_ingestion_notebook.ipynb"
+          notebook_path: "/Workspace/Users/peter.park@databricks.com/lakeflow_job_meta/examples/notebook_task/sample_ingestion_notebook"
       
-      - source_id: "validate_customer_data"
+      - source_id: "validate_data"
         source_type: "sql"
-        execution_order: 2  # Runs after ingestion
+        execution_order: 2
         transformation_config:
           task_type: "sql_query"
           sql_task:
             sql_query: |
               SELECT 
-                COUNT(*) as total_records,
-                COUNT(DISTINCT customer_id) as unique_customers,
-                MIN(ingestion_timestamp) as earliest_ingestion,
-                MAX(ingestion_timestamp) as latest_ingestion
-              FROM bronze.raw_data.customers
-              WHERE DATE(ingestion_timestamp) = CURRENT_DATE()
+                CURRENT_TIMESTAMP() as validation_timestamp,
+                'data_validation' as validation_type,
+                'SUCCESS' as status,
+                'Ingestion completed successfully' as message
 
   # Example 4: SQL Tasks with Saved Queries
   - module_name: "reporting_queries"
@@ -112,9 +105,9 @@ modules:
         transformation_config:
           task_type: "sql_query"
           sql_task:
-            query_id: "abc123-def456-ghi789"  # ID of saved query in Databricks SQL
+            query_id: "911c517b-d93e-4ab1-b065-ce361df23f8b"
             parameters:
-              report_date: "CURRENT_DATE()"
+              threshold: "5.0"
 
   # Example 5: SQL File Task - Data Freshness Monitoring
   - module_name: "data_freshness_monitoring"
@@ -126,7 +119,9 @@ modules:
         transformation_config:
           task_type: "sql_file"
           sql_task:
-            sql_file_path: "/Workspace/examples/sql_file_task/04_data_freshness_check.sql"
+            sql_file_path: "/Workspace/Users/peter.park@databricks.com/lakeflow_job_meta/examples/sql_file_task/04_data_freshness_check.sql"
             parameters:
+              catalog: "fe_ppark_demo"
+              schema: "lakeflow_job_metadata"
               max_hours: "24"
 

@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import MagicMock, patch, Mock
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.errors import NotFound
+from databricks.sdk.service.jobs import SqlTaskQuery
 
 from lakeflow_job_meta.orchestrator import JobOrchestrator
 
@@ -170,11 +171,12 @@ class TestJobOrchestrator:
         with pytest.raises(ValueError, match="No active sources found"):
             orchestrator.generate_tasks_for_module("module1")
     
+    @patch('lakeflow_job_meta.orchestrator.serialize_task_for_api')
     @patch('lakeflow_job_meta.orchestrator.JobOrchestrator.generate_tasks_for_module')
     @patch('lakeflow_job_meta.orchestrator.JobOrchestrator._get_stored_job_id')
     @patch('lakeflow_job_meta.orchestrator.JobOrchestrator._store_job_id')
     @patch('lakeflow_job_meta.orchestrator.convert_task_config_to_sdk_task')
-    def test_create_or_update_job_create_new(self, mock_convert, mock_store, mock_get_job_id, mock_generate_tasks, mock_workspace_client):
+    def test_create_or_update_job_create_new(self, mock_convert, mock_store, mock_get_job_id, mock_generate_tasks, mock_serialize, mock_workspace_client):
         """Test creating a new job."""
         mock_get_job_id.return_value = None  # No existing job
         mock_generate_tasks.return_value = [
@@ -184,11 +186,16 @@ class TestJobOrchestrator:
                 "notebook_task": {"notebook_path": "/test/notebook", "base_parameters": {}}
             }
         ]
-        mock_convert.return_value = MagicMock()
+        # Mock Task object without sql_task (notebook task)
+        mock_task = MagicMock()
+        mock_task.sql_task = None  # No SQL task
+        mock_convert.return_value = mock_task
+        mock_serialize.return_value = {"task_key": "task1", "notebook_task": {}}
         
-        mock_job_response = MagicMock()
-        mock_job_response.job_id = 12345
-        mock_workspace_client.jobs.create.return_value = mock_job_response
+        # Mock jobs.create for new job creation
+        mock_created_job = MagicMock()
+        mock_created_job.job_id = 12345
+        mock_workspace_client.jobs.create.return_value = mock_created_job
         
         orchestrator = JobOrchestrator("test_table", workspace_client=mock_workspace_client)
         job_id = orchestrator.create_or_update_job("test_module")
@@ -197,10 +204,11 @@ class TestJobOrchestrator:
         mock_workspace_client.jobs.create.assert_called_once()
         mock_store.assert_called_once()
     
+    @patch('lakeflow_job_meta.orchestrator.serialize_task_for_api')
     @patch('lakeflow_job_meta.orchestrator.JobOrchestrator.generate_tasks_for_module')
     @patch('lakeflow_job_meta.orchestrator.JobOrchestrator._get_stored_job_id')
     @patch('lakeflow_job_meta.orchestrator.convert_task_config_to_sdk_task')
-    def test_create_or_update_job_update_existing(self, mock_convert, mock_get_job_id, mock_generate_tasks, mock_workspace_client):
+    def test_create_or_update_job_update_existing(self, mock_convert, mock_get_job_id, mock_generate_tasks, mock_serialize, mock_workspace_client):
         """Test updating an existing job."""
         mock_get_job_id.return_value = 12345  # Existing job
         mock_generate_tasks.return_value = [
@@ -210,13 +218,66 @@ class TestJobOrchestrator:
                 "notebook_task": {"notebook_path": "/test/notebook", "base_parameters": {}}
             }
         ]
-        mock_convert.return_value = MagicMock()
+        # Mock Task object without sql_task (notebook task)
+        mock_task = MagicMock()
+        mock_task.sql_task = None  # No SQL task
+        mock_convert.return_value = mock_task
+        mock_serialize.return_value = {"task_key": "task1", "notebook_task": {}}
         
         orchestrator = JobOrchestrator("test_table", workspace_client=mock_workspace_client)
         job_id = orchestrator.create_or_update_job("test_module")
         
         assert job_id == 12345
         mock_workspace_client.jobs.update.assert_called_once()
+    
+    @patch('lakeflow_job_meta.orchestrator.serialize_task_for_api')
+    @patch('lakeflow_job_meta.orchestrator.JobOrchestrator.generate_tasks_for_module')
+    @patch('lakeflow_job_meta.orchestrator.JobOrchestrator._get_stored_job_id')
+    @patch('lakeflow_job_meta.orchestrator.JobOrchestrator._store_job_id')
+    @patch('lakeflow_job_meta.orchestrator.convert_task_config_to_sdk_task')
+    def test_create_or_update_job_with_inline_sql_query(self, mock_convert, mock_store, mock_get_job_id, mock_generate_tasks, mock_serialize, mock_workspace_client):
+        """Test creating a job with inline SQL query (auto-creates query)."""
+        mock_get_job_id.return_value = None  # No existing job
+        mock_generate_tasks.return_value = [
+            {
+                "task_key": "sql_task1",
+                "task_type": "sql_query",
+                "sql_task": {"warehouse_id": "warehouse123", "query": {"query": "SELECT 1"}}
+            }
+        ]
+        # Mock Task object with inline SQL query (dict format)
+        mock_task = MagicMock()
+        mock_task.task_key = "sql_task1"
+        mock_sql_task = MagicMock()
+        mock_sql_task.warehouse_id = "warehouse123"
+        mock_sql_task.query = {"query": "SELECT 1"}  # Inline SQL as dict
+        mock_task.sql_task = mock_sql_task
+        mock_convert.return_value = mock_task
+        
+        # Mock query creation
+        mock_created_query = MagicMock()
+        mock_created_query.id = "query_abc123"
+        mock_workspace_client.queries.create.return_value = mock_created_query
+        
+        mock_serialize.return_value = {"task_key": "sql_task1", "sql_task": {"query": {"query_id": "query_abc123"}}}
+
+        # Mock jobs.create for new job creation
+        mock_created_job = MagicMock()
+        mock_created_job.job_id = 12345
+        mock_workspace_client.jobs.create.return_value = mock_created_job
+
+        orchestrator = JobOrchestrator("test_table", workspace_client=mock_workspace_client)
+        job_id = orchestrator.create_or_update_job("test_module")
+
+        assert job_id == 12345
+        # Verify query was created
+        mock_workspace_client.queries.create.assert_called_once()
+        # Verify task query was updated (check that SqlTaskQuery was assigned)
+        # After query creation, sql_task.query should be SqlTaskQuery object
+        assert isinstance(mock_task.sql_task.query, SqlTaskQuery)
+        assert mock_task.sql_task.query.query_id == "query_abc123"
+        mock_workspace_client.jobs.create.assert_called_once()
+        mock_store.assert_called_once()
     
     @patch('lakeflow_job_meta.orchestrator.JobOrchestrator.generate_tasks_for_module')
     def test_create_or_update_job_no_tasks_error(self, mock_generate_tasks, mock_workspace_client):

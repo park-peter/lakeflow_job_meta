@@ -180,18 +180,30 @@ class MetadataManager:
             Total number of sources loaded
 
         Raises:
-            RuntimeError: If dbutils is not available (requires Databricks environment)
+            RuntimeError: If Spark is not available or volume operations fail
         """
         try:
-            # Try to import dbutils (available in Databricks environment)
-            try:
-                import dbutils
-            except NameError:
-                raise RuntimeError("dbutils not available. This function requires Databricks environment.")
+            spark = _get_spark()
+            if not spark:
+                raise RuntimeError("Spark session not available. This function requires Databricks runtime.")
 
-            # List files in volume
-            files = dbutils.fs.ls(volume_path)
-            yaml_files = [f.path for f in files if f.name.endswith((".yaml", ".yml"))]
+            # List files in volume using Spark
+            try:
+                files_df = spark.sql(f"LIST '{volume_path}'")
+                files_list = files_df.collect()
+                yaml_files = [row["path"] for row in files_list if row["name"].endswith((".yaml", ".yml"))]
+            except Exception as list_error:
+                # Fallback: try using SparkContext
+                try:
+                    files = spark.sparkContext.wholeTextFiles(f"{volume_path}/*.yaml").keys().collect()
+                    yaml_files = list(files)
+                    # Also try .yml extension
+                    yml_files = spark.sparkContext.wholeTextFiles(f"{volume_path}/*.yml").keys().collect()
+                    yaml_files.extend(list(yml_files))
+                except Exception:
+                    raise RuntimeError(
+                        f"Could not list files in volume '{volume_path}'. " f"Error: {str(list_error)}"
+                    ) from list_error
 
             if not yaml_files:
                 logger.warning(f"No YAML files found in {volume_path}")
@@ -200,15 +212,18 @@ class MetadataManager:
             total_loaded = 0
             for yaml_file in yaml_files:
                 try:
-                    # Read file from volume
-                    file_content = dbutils.fs.head(yaml_file)
+                    # Read file from volume using Spark
+                    file_content_lines = spark.sparkContext.textFile(yaml_file).collect()
+                    file_content = "\n".join(file_content_lines)
 
                     # Write to temp file for parsing (yaml.safe_load requires file-like object)
                     import tempfile
 
                     tmp_path = None
                     try:
-                        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp:
+                        with tempfile.NamedTemporaryFile(
+                            mode="w", suffix=".yaml", delete=False, encoding="utf-8"
+                        ) as tmp:
                             tmp.write(file_content)
                             tmp_path = tmp.name
 
@@ -255,26 +270,23 @@ class MetadataManager:
             changes = {"new_modules": [], "updated_modules": [], "deactivated_modules": [], "changed_sources": []}
 
             if last_check_timestamp:
-                # Check for updates since last check
                 changed_df = table_df.filter(F.col("updated_timestamp") > F.lit(last_check_timestamp))
+                changed_rows = changed_df.collect()
 
-                if changed_df.count() > 0:
-                    # Get unique modules with changes
-                    updated_modules = changed_df.select("module_name").distinct().collect()
-                    changes["updated_modules"] = [row["module_name"] for row in updated_modules]
+                if changed_rows:
+                    updated_module_set = {row["module_name"] for row in changed_rows}
+                    changes["updated_modules"] = list(updated_module_set)
 
-                    # Get new sources (created since last check)
-                    new_sources = changed_df.filter(F.col("created_timestamp") == F.col("updated_timestamp")).collect()
+                    new_sources = [row for row in changed_rows if row["created_timestamp"] == row["updated_timestamp"]]
                     changes["changed_sources"] = [
                         {"source_id": row["source_id"], "module_name": row["module_name"], "action": "new"}
                         for row in new_sources
                     ]
 
-                    # Check for deactivated modules (sources that became inactive since last check)
-                    deactivated_df = changed_df.filter(F.col("is_active") == False)
-                    if deactivated_df.count() > 0:
-                        deactivated_modules = deactivated_df.select("module_name").distinct().collect()
-                        changes["deactivated_modules"] = [row["module_name"] for row in deactivated_modules]
+                    deactivated_rows = [row for row in changed_rows if not row["is_active"]]
+                    if deactivated_rows:
+                        deactivated_module_set = {row["module_name"] for row in deactivated_rows}
+                        changes["deactivated_modules"] = list(deactivated_module_set)
             else:
                 # First run: treat all active modules as new
                 active_modules = table_df.filter(F.col("is_active") == True).select("module_name").distinct().collect()
@@ -317,7 +329,7 @@ class MetadataManager:
                 .orderBy("execution_order")
                 .collect()
             )
-            return [dict(row) for row in sources]
+            return [row.asDict() if hasattr(row, "asDict") else dict(row) for row in sources]
         except Exception as e:
             logger.error(f"Failed to get sources for module '{module_name}': {str(e)}")
             raise RuntimeError(f"Failed to get sources for module '{module_name}': {str(e)}") from e

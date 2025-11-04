@@ -51,9 +51,8 @@ A metadata-driven framework for orchestrating Databricks Lakeflow Jobs. Package 
 │   ├── orchestrator_example.ipynb  # Orchestrator example notebook
 │   ├── notebook_task/          # Example notebook tasks
 │   │   └── sample_ingestion_notebook.ipynb # Example ingestion notebook task
-│   ├── sql_query_task/         # SQL query task examples
-│   │   └── 01_data_quality_check.sql
 │   ├── sql_file_task/          # SQL file task examples
+│   │   ├── 01_create_sample_data.sql
 │   │   ├── 02_daily_aggregations.sql
 │   │   ├── 03_bronze_to_silver_transformation.sql
 │   │   ├── 04_data_freshness_check.sql
@@ -113,8 +112,8 @@ INSERT INTO your_catalog.schema.etl_control VALUES (
   'sql',
   1,
   '{}',
-  '{"catalog": "bronze", "schema": "data", "table": "customers"}',
-  '{"task_type": "sql_query", "sql_task": {"warehouse_id": "abc123", "sql_query": "SELECT * FROM bronze.customers"}}',
+  '{}',
+  '{"task_type": "sql_query", "sql_task": {"warehouse_id": "abc123", "sql_query": "SELECT * FROM bronze.customers", "parameters": {}}}',
   true
 );
 ```
@@ -193,41 +192,58 @@ transformation_config:
 ```
 
 **Parameters passed to notebook:**
-- `source_id`: Unique identifier (used to query control table)
+- `source_id`: Unique identifier for querying the control table
 - `control_table`: Name of the control table containing metadata
 
 ### 2. SQL Query Tasks
 
-Execute inline SQL queries.
+Execute SQL queries. Queries can be inline SQL or reference saved queries by `query_id`.
 
-**Note:** `warehouse_id` is REQUIRED for SQL tasks per Databricks Jobs API. It must be provided in the `sql_task` configuration.
+**Note:** `warehouse_id` is required for SQL tasks. It can be specified in `sql_task.warehouse_id` or provided via `default_warehouse_id` when initializing the orchestrator.
 
 ```yaml
 transformation_config:
   task_type: "sql_query"
   sql_task:
-    warehouse_id: "your-warehouse-id"  # REQUIRED: SQL Warehouse ID
+    warehouse_id: "your-warehouse-id"
     sql_query: |
-      SELECT * FROM bronze.customers
+      SELECT * FROM bronze.customers WHERE date > :start_date
+    parameters:
+      start_date: "{{job.start_time.iso_date}}"
+```
+
+Or use a saved query:
+
+```yaml
+transformation_config:
+  task_type: "sql_query"
+  sql_task:
+    warehouse_id: "your-warehouse-id"
+    query_id: "abc123-def456-ghi789"
     parameters:
       threshold: "5.0"
 ```
 
 ### 3. SQL File Tasks
 
-Execute SQL from files in your workspace.
+Execute SQL from files in your workspace or Git repository.
 
-**Note:** `warehouse_id` is REQUIRED for SQL tasks per Databricks Jobs API. It must be provided in the `sql_task` configuration.
+**Note:** `warehouse_id` is required for SQL tasks. It can be specified in `sql_task.warehouse_id` or provided via `default_warehouse_id` when initializing the orchestrator.
 
 ```yaml
 transformation_config:
   task_type: "sql_file"
   sql_task:
-    warehouse_id: "your-warehouse-id"  # REQUIRED: SQL Warehouse ID
+    warehouse_id: "your-warehouse-id"
     sql_file_path: "/Workspace/path/to/query.sql"
+    file_source: "WORKSPACE"  # Optional: WORKSPACE or GIT (default: WORKSPACE)
     parameters:
+      catalog: "my_catalog"
+      schema: "my_schema"
       max_hours: "24"
 ```
+
+SQL files should use parameter syntax (`:parameter_name`) for values passed via `parameters`. Parameters can be static values or Databricks dynamic value references like `{{job.id}}`, `{{task.name}}`, `{{job.start_time.iso_date}}`, etc.
 
 ## Metadata Schema
 
@@ -266,9 +282,10 @@ See `examples/metadata_examples.yaml` for comprehensive examples including:
 
 1. **Use SQL Files for Reusable Logic**: Store common SQL transformations in files
 2. **Leverage Execution Order**: Design your pipelines with clear stages
-3. **Parameterize SQL**: Use parameters for configurable thresholds and dates
+3. **Parameterize SQL**: Use parameters and Databricks dynamic value references for flexible SQL
 4. **Follow Naming Conventions**: Use clear, descriptive `source_id` values
 5. **Document Your Pipelines**: Add descriptions to modules
+6. **Use Task Parameters**: Leverage Databricks dynamic value references like `{{job.id}}`, `{{task.name}}`, `{{job.start_time.iso_date}}` for runtime values
 
 ## Future Enhancements
 

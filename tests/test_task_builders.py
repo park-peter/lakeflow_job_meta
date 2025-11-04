@@ -56,7 +56,8 @@ class TestCreateTaskFromConfig:
         assert task_config["task_type"] == TASK_TYPE_SQL_FILE
         assert "sql_task" in task_config
         assert task_config["sql_task"]["warehouse_id"] == "abc123"
-        assert task_config["sql_task"]["sql_file_path"] == "/Workspace/test/query.sql"
+        assert task_config["sql_task"]["file"]["path"] == "/Workspace/test/query.sql"
+        assert task_config["sql_task"]["file"]["source"] == "WORKSPACE"
 
     def test_task_with_dependencies(self, sample_source_data):
         """Test task creation with dependencies."""
@@ -173,14 +174,13 @@ class TestCreateSqlFileTaskConfig:
         """Test creation of valid SQL file task."""
         trans_config = {"sql_task": {"warehouse_id": "abc123", "sql_file_path": "/Workspace/test/query.sql"}}
 
-        with patch("lakeflow_job_meta.task_builders.dbutils") as mock_dbutils:
-            mock_dbutils.fs.head.return_value = "SELECT * FROM table"
+        task_config = create_sql_file_task_config(sample_source_data, "test_task_key", trans_config)
 
-            task_config = create_sql_file_task_config(sample_source_data, "test_task_key", trans_config)
-
-            assert task_config["task_key"] == "test_task_key"
-            assert task_config["sql_task"]["warehouse_id"] == "abc123"
-            assert task_config["sql_task"]["sql_file_path"] == "/Workspace/test/query.sql"
+        assert task_config["task_key"] == "test_task_key"
+        assert task_config["task_type"] == TASK_TYPE_SQL_FILE
+        assert task_config["sql_task"]["warehouse_id"] == "abc123"
+        assert task_config["sql_task"]["file"]["path"] == "/Workspace/test/query.sql"
+        assert task_config["sql_task"]["file"]["source"] == "WORKSPACE"
 
     def test_missing_sql_file_path(self, sample_source_data):
         """Test error when sql_file_path is missing."""
@@ -219,7 +219,25 @@ class TestConvertTaskConfigToSdkTask:
 
         assert sdk_task.task_key == "test_task"
         assert sdk_task.sql_task.warehouse_id == "abc123"
-        assert sdk_task.sql_task.query.query == "SELECT * FROM table"
+        assert isinstance(sdk_task.sql_task.query, dict)
+        assert sdk_task.sql_task.query["query"] == "SELECT * FROM table"
+
+    def test_sql_file_task_conversion(self):
+        """Test conversion of SQL file task config to SDK task."""
+        task_config = {
+            "task_key": "test_task",
+            "task_type": TASK_TYPE_SQL_FILE,
+            "sql_task": {
+                "warehouse_id": "abc123",
+                "file": {"path": "/Workspace/test/query.sql", "source": "WORKSPACE"},
+            },
+        }
+
+        sdk_task = convert_task_config_to_sdk_task(task_config)
+
+        assert sdk_task.task_key == "test_task"
+        assert sdk_task.sql_task.warehouse_id == "abc123"
+        assert sdk_task.sql_task.file.path == "/Workspace/test/query.sql"
 
     def test_task_with_dependencies(self):
         """Test task conversion with dependencies."""

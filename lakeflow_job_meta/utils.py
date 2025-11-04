@@ -1,7 +1,7 @@
 """Utility functions for the Lakeflow Job Meta framework"""
 
 import re
-from typing import Optional
+from typing import Optional, Dict, Any
 
 
 def sanitize_task_key(source_id: str) -> str:
@@ -42,4 +42,6 @@ def validate_notebook_path(notebook_path: str) -> bool:
         logger = logging.getLogger(__name__)
         logger.info(f"Using custom notebook path: {notebook_path}")
     return True
+
+
 

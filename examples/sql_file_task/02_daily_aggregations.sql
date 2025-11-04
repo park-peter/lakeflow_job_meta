@@ -1,23 +1,16 @@
 -- Daily Sales Aggregations
--- Aggregates daily sales data by product category
--- Writes to silver layer for downstream analytics
+-- Aggregates daily sales data and creates a summary table
 
-INSERT INTO silver.daily_sales_summary
+CREATE OR REPLACE TABLE IDENTIFIER(:catalog || '.' || :schema || '.daily_sales_summary') AS
 SELECT 
-  date,
-  product_category,
-  product_subcategory,
+  order_date,
+  COUNT(*) as total_orders,
   SUM(revenue) as total_revenue,
   SUM(quantity) as total_quantity,
   COUNT(DISTINCT customer_id) as unique_customers,
-  COUNT(DISTINCT order_id) as total_orders,
   AVG(revenue) as avg_order_value,
+  COUNT(CASE WHEN status = 'completed' THEN 1 END) as completed_orders,
   CURRENT_TIMESTAMP() as processed_at
-FROM bronze.sales
-WHERE date = CURRENT_DATE()
-  AND status = 'completed'
-GROUP BY 
-  date,
-  product_category,
-  product_subcategory
-
+FROM IDENTIFIER(:catalog || '.' || :schema || '.sample_sales_data')
+WHERE order_date = CURRENT_DATE()
+GROUP BY order_date
