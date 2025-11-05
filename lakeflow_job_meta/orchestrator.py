@@ -73,6 +73,23 @@ def _get_spark():
     return SparkSession.getActiveSession()
 
 
+def _get_current_user() -> str:
+    """Get current username from Spark SQL context.
+
+    Returns:
+        Current username as string, or 'unknown' if unable to determine
+    """
+    try:
+        spark = _get_spark()
+        if spark:
+            result = spark.sql("SELECT current_user() as user").first()
+            if result:
+                return result["user"] or "unknown"
+    except Exception:
+        pass
+    return "unknown"
+
+
 class JobOrchestrator:
     """Orchestrates Databricks Jobs based on metadata in control table.
 
@@ -126,7 +143,9 @@ class JobOrchestrator:
                     module_name STRING,
                     job_id BIGINT,
                     job_name STRING,
+                    created_by STRING,
                     created_timestamp TIMESTAMP DEFAULT current_timestamp(),
+                    updated_by STRING,
                     updated_timestamp TIMESTAMP DEFAULT current_timestamp()
                 )
                 TBLPROPERTIES ('delta.feature.allowColumnDefaults'='supported')
@@ -164,7 +183,16 @@ class JobOrchestrator:
         """Store/update job_id for a module in Delta table (internal)."""
         spark = _get_spark()
         try:
-            source_data = [Row(module_name=module_name, job_id=job_id, job_name=job_name)]
+            current_user = _get_current_user()
+            source_data = [
+                Row(
+                    module_name=module_name,
+                    job_id=job_id,
+                    job_name=job_name,
+                    created_by=current_user,
+                    updated_by=current_user,
+                )
+            ]
             source_df = spark.createDataFrame(source_data).withColumn("updated_timestamp", F.current_timestamp())
             source_df.createOrReplaceTempView("source_data")
 
@@ -176,10 +204,18 @@ class JobOrchestrator:
                 WHEN MATCHED THEN
                     UPDATE SET
                         job_name = source.job_name,
+                        updated_by = source.updated_by,
                         updated_timestamp = source.updated_timestamp
                 WHEN NOT MATCHED THEN
-                    INSERT (module_name, job_id, job_name, updated_timestamp)
-                    VALUES (source.module_name, source.job_id, source.job_name, source.updated_timestamp)
+                    INSERT (module_name, job_id, job_name, created_by, updated_by, updated_timestamp)
+                    VALUES (
+                        source.module_name,
+                        source.job_id,
+                        source.job_name,
+                        source.created_by,
+                        source.updated_by,
+                        source.updated_timestamp,
+                    )
             """
             )
 

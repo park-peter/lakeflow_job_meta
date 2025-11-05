@@ -312,6 +312,17 @@ Task-level settings in `transformation_config`:
 
 - `timeout_seconds`: Maximum time the task can run (default: 3600 seconds)
 
+### Audit Fields
+
+Both the control table and jobs table automatically track user information:
+
+- `created_by`: Username of the user who created the record (set only on INSERT, never updated)
+- `updated_by`: Username of the user who last updated the record (set on INSERT and UPDATE)
+- `created_timestamp`: Timestamp when the record was created
+- `updated_timestamp`: Timestamp when the record was last updated
+
+These fields are automatically populated using Spark SQL's `current_user()` function.
+
 ## Execution Order and Dependencies
 
 Tasks with the same `execution_order` run in parallel. Tasks with higher `execution_order` wait for all tasks in previous orders to complete.

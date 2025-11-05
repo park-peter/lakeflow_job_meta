@@ -17,6 +17,23 @@ def _get_spark():
     return SparkSession.getActiveSession()
 
 
+def _get_current_user() -> str:
+    """Get current username from Spark SQL context.
+
+    Returns:
+        Current username as string, or 'unknown' if unable to determine
+    """
+    try:
+        spark = _get_spark()
+        if spark:
+            result = spark.sql("SELECT current_user() as user").first()
+            if result:
+                return result["user"] or "unknown"
+    except Exception:
+        pass
+    return "unknown"
+
+
 class MetadataManager:
     """Manages metadata operations for the control table.
 
@@ -57,7 +74,9 @@ class MetadataManager:
                     target_config STRING,
                     transformation_config STRING,
                     is_active BOOLEAN DEFAULT true,
+                    created_by STRING,
                     created_timestamp TIMESTAMP DEFAULT current_timestamp(),
+                    updated_by STRING,
                     updated_timestamp TIMESTAMP DEFAULT current_timestamp()
                 )
                 TBLPROPERTIES ('delta.feature.allowColumnDefaults'='supported')
@@ -101,7 +120,7 @@ class MetadataManager:
         for module in config["modules"]:
             module_name = module["module_name"]
             job_config = module.get("job_config", {})
-            
+
             # Store job_config in source_config of first source (as a workaround)
             # This allows us to retrieve it later when creating jobs
             first_source = True
@@ -121,6 +140,7 @@ class MetadataManager:
                     source_config["_job_config"] = job_config
                     first_source = False
 
+                current_user = _get_current_user()
                 rows.append(
                     {
                         "source_id": source["source_id"],
@@ -131,6 +151,8 @@ class MetadataManager:
                         "target_config": json.dumps(source.get("target_config", {})),
                         "transformation_config": json.dumps(trans_config),
                         "is_active": True,
+                        "created_by": current_user,
+                        "updated_by": current_user,
                     }
                 )
 
@@ -149,6 +171,8 @@ class MetadataManager:
                 StructField("target_config", StringType(), True),
                 StructField("transformation_config", StringType(), True),
                 StructField("is_active", BooleanType(), True),
+                StructField("created_by", StringType(), True),
+                StructField("updated_by", StringType(), True),
             ]
         )
 
@@ -170,13 +194,14 @@ class MetadataManager:
                     target_config = source.target_config,
                     transformation_config = source.transformation_config,
                     is_active = source.is_active,
+                    updated_by = source.updated_by,
                     updated_timestamp = current_timestamp()
             WHEN NOT MATCHED THEN
-                INSERT (source_id, module_name, source_type, execution_order, 
-                        source_config, target_config, transformation_config, is_active)
-                VALUES (source.source_id, source.module_name, source.source_type, 
-                        source.execution_order, source.source_config, source.target_config, 
-                        source.transformation_config, source.is_active)
+                INSERT (source_id, module_name, source_type, execution_order,
+                        source_config, target_config, transformation_config, is_active, created_by, updated_by)
+                VALUES (source.source_id, source.module_name, source.source_type,
+                        source.execution_order, source.source_config, source.target_config,
+                        source.transformation_config, source.is_active, source.created_by, source.updated_by)
         """
         )
 
