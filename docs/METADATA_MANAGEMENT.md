@@ -2,123 +2,111 @@
 
 ## Overview
 
-This framework uses **Delta tables as the primary source of truth** for metadata, with YAML files as an optional ingestion mechanism.
-
-## Architecture Decision
-
-### Why Delta Tables?
-
-1. **Direct SQL Updates**: Update metadata without file management
-2. **Version Control**: Delta time travel provides built-in versioning
-3. **Real-time Updates**: Changes are immediately available
-4. **Collaboration**: Multiple users can update different modules simultaneously
-5. **Audit Trail**: Automatic `created_timestamp` and `updated_timestamp` tracking
-6. **Unity Catalog Integration**: Proper permissions and governance
-
-### YAML Files: Optional, Not Required
-
-YAML files are supported for:
-- **Initial Bootstrap**: Loading initial metadata
-- **Bulk Updates**: Updating many sources at once
-- **Version Control**: Storing metadata in Git
-- **CI/CD**: Deploying metadata via pipelines
-
-But you can also manage everything directly in Delta tables!
+This framework uses **Delta tables as the source of truth** for metadata, with YAML files as the recommended ingestion mechanism. YAML files provide version control, easy editing, and can be automatically processed using Databricks file arrival triggers.
 
 ---
 
 ## Workflow Options
 
-### Workflow 1: Direct Table Updates (Recommended) ⭐
+### Workflow 1: YAML File Ingestion (Recommended) ⭐
 
-**Best for:** Day-to-day operations, real-time updates
+**Best for:** Most use cases - version control, easy editing, CI/CD integration
 
-```sql
--- Add a new source
-INSERT INTO fe_ppark_demo.job_demo.etl_control VALUES (
-  'new_sql_task',
-  'my_module',
-  'sql',
-  1,
-  '{}',
-  '{"catalog": "bronze", "schema": "data", "table": "customers"}',
-  '{"task_type": "sql_query", "sql_task": {"warehouse_id": "abc123", "sql_query": "SELECT * FROM bronze.customers"}}',
-  true
-);
-
--- Update existing source
-UPDATE fe_ppark_demo.job_demo.etl_control
-SET execution_order = 2,
-    transformation_config = '{"task_type": "sql_query", "sql_task": {...}}',
-    updated_timestamp = current_timestamp()
-WHERE source_id = 'existing_source' AND module_name = 'my_module';
-
--- Deactivate source (soft delete)
-UPDATE fe_ppark_demo.job_demo.etl_control
-SET is_active = false,
-    updated_timestamp = current_timestamp()
-WHERE source_id = 'old_source';
-```
-
-**Then run orchestrator:**
-```python
-from lakeflow_job_meta import JobOrchestrator
-
-orchestrator = JobOrchestrator(CONTROL_TABLE)
-jobs = orchestrator.run_all_modules()
-```
-
----
-
-### Workflow 2: YAML File Ingestion
-
-**Best for:** Initial setup, bulk migrations, Git-based workflows
+**Option 1a: Single YAML File**
 
 ```python
-# Load YAML into table
-from lakeflow_job_meta import MetadataManager, JobOrchestrator
+# Load single YAML file into table
+from lakeflow_jobs_meta import MetadataManager, JobOrchestrator
 
 manager = MetadataManager(CONTROL_TABLE)
 manager.load_yaml('./examples/metadata_examples.yaml')
 
 # Then orchestrate
-orchestrator = JobOrchestrator(CONTROL_TABLE)
-jobs = orchestrator.run_all_modules()
+orchestrator = JobOrchestrator(control_table=CONTROL_TABLE)
+jobs = orchestrator.create_or_update_jobs()
 ```
 
 **Or pass YAML path directly to orchestrator:**
 ```python
-from lakeflow_job_meta import JobOrchestrator
+from lakeflow_jobs_meta import JobOrchestrator
 
-orchestrator = JobOrchestrator(CONTROL_TABLE)
-jobs = orchestrator.run_all_modules(
+orchestrator = JobOrchestrator(control_table=CONTROL_TABLE)
+jobs = orchestrator.create_or_update_jobs(
     yaml_path='./examples/metadata_examples.yaml',
     sync_yaml=True
 )
 ```
 
----
+**Option 1b: Unity Catalog Volume with File Arrival Trigger (Recommended for Production)**
 
-### Workflow 3: Unity Catalog Volume Monitoring
+For production environments, use Databricks file arrival triggers to automatically process YAML files when they're uploaded to a Unity Catalog volume:
 
-**Best for:** Production environments with automated deployments
+1. **Configure File Arrival Trigger**: Set up a file arrival trigger on your job to monitor the Unity Catalog volume where YAML files are stored. See [Databricks File Arrival Triggers](https://docs.databricks.com/aws/en/jobs/file-arrival-triggers) for details.
+
+2. **Upload YAML Files**: When YAML files are uploaded to the monitored volume, the job automatically triggers.
+
+3. **Sync and Update**: The job calls `sync_from_volume()` to load all YAML files and update jobs:
 
 ```python
-from lakeflow_job_meta import MetadataMonitor
+import lakeflow_jobs_meta as jm
 
-# Continuously monitor volume for YAML files
-monitor = MetadataMonitor(
-    control_table=CONTROL_TABLE,
-    volume_path='/Volumes/catalog/schema/metadata_volume',
-    check_interval_seconds=60
+# This runs automatically when file arrival trigger fires
+tasks_loaded = jm.sync_from_volume(
+    '/Volumes/catalog/schema/metadata_volume',
+    control_table=CONTROL_TABLE
 )
-monitor.run_continuous()
+
+# Then create/update jobs
+jobs = jm.create_or_update_jobs(control_table=CONTROL_TABLE)
 ```
 
-**Setup:**
-1. Store YAML files in Unity Catalog volume
-2. Run monitoring job continuously
-3. When YAML files are added/updated, they're automatically synced and jobs are updated
+**Benefits of File Arrival Triggers:**
+- Automatic processing when files arrive (no polling needed)
+- Efficient: Only triggers when files actually change
+- Scalable: Handles large numbers of files efficiently
+- No need for continuous monitoring jobs
+
+**Note:** File arrival triggers require Unity Catalog volumes or external locations. The trigger monitors the root or subpath of the volume and recursively checks for new files in all subdirectories.
+
+---
+
+### Workflow 2: Direct Delta Table Updates
+
+**Best for:** Advanced use cases, programmatic updates
+
+```sql
+-- Add a new task
+INSERT INTO fe_ppark_demo.job_demo.etl_control VALUES (
+  'my_job',
+  'new_sql_task',
+  '[]',  -- depends_on (JSON array, empty for no dependencies)
+  'sql_query',
+  '{"catalog": "bronze", "schema": "data"}',
+  '{"warehouse_id": "abc123", "sql_query": "SELECT * FROM bronze.customers"}',
+  false
+);
+
+-- Update existing task dependencies
+UPDATE fe_ppark_demo.job_demo.etl_control
+SET depends_on = '["task_a", "task_b"]',  -- depends_on as JSON array
+    task_config = '{"warehouse_id": "abc123", "sql_query": "SELECT * FROM bronze.customers WHERE date > CURRENT_DATE()"}',
+    updated_timestamp = current_timestamp()
+WHERE job_name = 'my_job' AND task_key = 'existing_task';
+
+-- Disable task
+UPDATE fe_ppark_demo.job_demo.etl_control
+SET disabled = true,
+    updated_timestamp = current_timestamp()
+WHERE job_name = 'my_job' AND task_key = 'old_task';
+```
+
+**Then run orchestrator:**
+```python
+from lakeflow_jobs_meta import JobOrchestrator
+
+orchestrator = JobOrchestrator(control_table=CONTROL_TABLE)
+jobs = orchestrator.create_or_update_jobs()
+```
 
 ---
 
@@ -133,16 +121,16 @@ The framework automatically detects changes using:
 ### Manual Change Detection
 
 ```python
-from lakeflow_job_meta import MetadataManager
+from lakeflow_jobs_meta import MetadataManager
 
 manager = MetadataManager(CONTROL_TABLE)
 changes = manager.detect_changes(last_check_timestamp=None)
 print(changes)
 # {
-#   'new_modules': ['module1'],
-#   'updated_modules': ['module2'],
-#   'deactivated_modules': [],
-#   'changed_sources': [...]
+#   'new_jobs': ['job1'],
+#   'updated_jobs': ['job2'],
+#   'disabled_jobs': [],
+#   'changed_tasks': [...]
 # }
 ```
 
@@ -169,28 +157,36 @@ We **update existing jobs** rather than creating new ones:
 
 ### For End Users
 
-1. **Prefer Direct Table Updates**: Most flexible and immediate
-2. **Use YAML for Bulk Changes**: Great for initial setup or major migrations
-3. **Enable Monitoring in Production**: Use continuous monitoring for automated updates
-4. **Version Control YAML**: Store YAML files in Git for change tracking
+1. **Use YAML Files**: Store metadata in YAML files for version control and easy editing
+2. **Use File Arrival Triggers**: Set up file arrival triggers for automatic processing in production
+3. **Version Control**: Store YAML files in Git for change tracking
+4. **Direct Table Updates**: Use for programmatic updates or advanced use cases
 
 ### For Administrators
 
-1. **Set Up Monitoring Job**: Create scheduled job running `MetadataMonitor.run_continuous()` continuously
-2. **Use Unity Catalog Volumes**: Store YAML files in volumes for automatic sync
+1. **Set Up File Arrival Triggers**: Configure file arrival triggers on jobs to monitor Unity Catalog volumes
+2. **Use Unity Catalog Volumes**: Store YAML files in volumes for automatic processing
 3. **Control Permissions**: Use Unity Catalog to control who can update control table
 4. **Monitor Changes**: Query `updated_timestamp` to track metadata changes
 
 ---
 
-## Migration from YAML-Only to Delta-First
+## Task Dependencies
 
-If you're currently using YAML files:
+Tasks use the `depends_on` field to specify dependencies. Tasks without dependencies (or with empty `depends_on`) run first in parallel. Tasks with dependencies wait for all their dependencies to complete before running.
 
-1. **Initial Load**: Run `MetadataManager.load_yaml()` once to bootstrap
-2. **Switch to Table Updates**: Start updating Delta table directly
-3. **Keep YAML for Backup**: Periodically export table to YAML for version control
-4. **Enable Monitoring**: Set up continuous monitoring if desired
+Example:
+```yaml
+tasks:
+  - task_key: "task_a"
+    depends_on: []  # No dependencies, runs first
+  - task_key: "task_b"
+    depends_on: []  # No dependencies, runs in parallel with task_a
+  - task_key: "task_c"
+    depends_on: ["task_a", "task_b"]  # Waits for both task_a and task_b to complete
+```
+
+The framework automatically resolves dependencies and creates the correct execution order. Circular dependencies are detected and will cause an error.
 
 ---
 

@@ -4,7 +4,7 @@ import argparse
 import logging
 import sys
 
-from lakeflow_job_meta.monitor import MetadataMonitor
+from lakeflow_jobs_meta.monitor import MetadataMonitor
 
 # Configure logging
 logging.basicConfig(

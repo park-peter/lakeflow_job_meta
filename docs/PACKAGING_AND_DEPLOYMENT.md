@@ -7,8 +7,8 @@ Lakeflow Job Meta is packaged as a Python library that can be installed and run 
 ## Package Structure
 
 ```
-lakeflow-job-meta/
-├── lakeflow_job_meta/          # Main package
+lakeflow-jobs-meta/
+├── lakeflow_jobs_meta/          # Main package
 │   ├── __init__.py
 │   ├── main.py                 # Entry point for monitoring task
 │   ├── constants.py
@@ -28,8 +28,8 @@ lakeflow-job-meta/
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/lakeflow-job-meta.git
-cd lakeflow-job-meta
+git clone https://github.com/yourusername/lakeflow-jobs-meta.git
+cd lakeflow-jobs-meta
 
 # Install in development mode
 pip install -e .
@@ -42,17 +42,20 @@ pip install -e .
 python setup.py bdist_wheel
 
 # Install wheel
-pip install dist/lakeflow_job_meta-0.1.0-py3-none-any.whl
+pip install dist/lakeflow_jobs_meta-0.1.0-py3-none-any.whl
 ```
 
 ### Option 3: Install in Databricks Workspace
 
 ```python
 # In Databricks notebook or job
-%pip install /Workspace/Repos/your-repo/lakeflow-job-meta
+%pip install /Workspace/Repos/your-repo/lakeflow-jobs-meta
 
 # Or from wheel uploaded to workspace
-%pip install /dbfs/FileStore/lakeflow_job_meta-0.1.0-py3-none-any.whl
+%pip install /dbfs/FileStore/lakeflow_jobs_meta-0.1.0-py3-none-any.whl
+
+# Or install from PyPI (once published)
+%pip install lakeflow-jobs-meta
 ```
 
 ## Usage as a Lakeflow Job Task
@@ -108,7 +111,7 @@ The job will:
    
 2. Check Delta table for changes
    - Compare updated_timestamp with last_check
-   - Identify changed modules
+   - Identify changed jobs
    
 3. If changes detected:
    - Update affected Databricks jobs
@@ -127,7 +130,7 @@ The job will:
 {
     "task_key": "monitor_metadata",
     "notebook_task": {
-        "notebook_path": "/Workspace/Repos/repo/lakeflow-job-meta/examples/orchestrator_example",
+        "notebook_path": "/Workspace/Repos/repo/lakeflow-jobs-meta/examples/orchestrator_example",
         "base_parameters": {
             "control_table": "your_catalog.schema.etl_control",
             "volume_path": "/Volumes/catalog/schema/metadata",
@@ -186,14 +189,14 @@ INFO - Volume Path: /Volumes/catalog/schema/metadata
 INFO - YAML files changed in volume, syncing...
 INFO - Synced 5 sources from YAML files
 INFO - Changes detected: 2 job(s) updated
-INFO - Updating 2 module(s) due to metadata changes: ['module1', 'module2']
-INFO - Job updated successfully for module1 (Job ID: 12345)
+INFO - Updating 2 job(s) due to metadata changes: ['job1', 'job2']
+INFO - Job updated successfully for job1 (Job ID: 12345)
 ```
 
 ## Error Handling
 
 - **Volume Sync Errors:** Logged as warnings, monitoring continues
-- **Job Update Errors:** Logged as errors, other modules still processed
+- **Job Update Errors:** Logged as errors, other jobs still processed
 - **Fatal Errors:** Logged and monitoring stops (can be restarted)
 
 ## Best Practices
@@ -212,11 +215,14 @@ INFO - Job updated successfully for module1 (Job ID: 12345)
 ### Package Not Found
 ```python
 # Make sure package is installed
-%pip install -e /Workspace/path/to/lakeflow-job-meta
+%pip install -e /Workspace/path/to/lakeflow-jobs-meta
 
 # Or add to Python path
 import sys
-sys.path.insert(0, '/Workspace/path/to/lakeflow-job-meta')
+sys.path.insert(0, '/Workspace/path/to/lakeflow-jobs-meta')
+
+# Or install from PyPI
+%pip install lakeflow-jobs-meta
 ```
 
 ### dbutils Not Available

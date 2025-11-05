@@ -7,8 +7,8 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 from databricks.sdk import WorkspaceClient
 
-from lakeflow_job_meta.orchestrator import JobOrchestrator
-from lakeflow_job_meta.metadata_manager import MetadataManager
+from lakeflow_jobs_meta.orchestrator import JobOrchestrator
+from lakeflow_jobs_meta.metadata_manager import MetadataManager
 
 logger = logging.getLogger(__name__)
 
@@ -143,8 +143,8 @@ class MetadataMonitor:
                     result["changes_detected"] = True
                     logger.info("YAML files changed in volume, syncing...")
                     try:
-                        sources_loaded = self.metadata_manager.sync_from_volume(self.volume_path)
-                        logger.info(f"Synced {sources_loaded} sources from YAML files")
+                        tasks_loaded = self.metadata_manager.sync_from_volume(self.volume_path)
+                        logger.info(f"Synced {tasks_loaded} tasks from YAML files")
                     except Exception as e:
                         logger.warning(f"Failed to sync YAML from volume: {str(e)}")
                         result["errors"].append(f"Volume sync error: {str(e)}")
@@ -152,57 +152,57 @@ class MetadataMonitor:
             # Detect changes in Delta table
             changes = self.metadata_manager.detect_changes(self.last_check_timestamp)
 
-            table_changed = any([changes["new_modules"], changes["updated_modules"], changes["deactivated_modules"]])
+            table_changed = any([changes["new_jobs"], changes["updated_jobs"], changes["disabled_jobs"]])
 
             if table_changed:
                 result["table_changes"] = True
                 result["changes_detected"] = True
 
-            modules_to_update = set()
+            jobs_to_update = set()
 
-            # Collect modules that need updates
-            if changes["new_modules"]:
-                modules_to_update.update(changes["new_modules"])
+            # Collect jobs that need updates
+            if changes["new_jobs"]:
+                jobs_to_update.update(changes["new_jobs"])
 
-            if changes["updated_modules"]:
-                modules_to_update.update(changes["updated_modules"])
+            if changes["updated_jobs"]:
+                jobs_to_update.update(changes["updated_jobs"])
 
-            if changes["deactivated_modules"]:
-                modules_to_update.update(changes["deactivated_modules"])
+            if changes["disabled_jobs"]:
+                jobs_to_update.update(changes["disabled_jobs"])
 
-            # If YAML changed, update all modules (since YAML might affect any module)
+            # If YAML changed, update all jobs (since YAML might affect any job)
             if yaml_changed:
-                # Get all active modules to update
+                # Get all jobs to update
                 try:
                     from pyspark.sql import SparkSession
 
                     spark = SparkSession.getActiveSession()
                     if spark:
-                        all_modules = spark.table(self.control_table).select("module_name").distinct().collect()
-                        modules_to_update.update([row["module_name"] for row in all_modules])
+                        all_jobs = spark.table(self.control_table).select("job_name").distinct().collect()
+                        jobs_to_update.update([row["job_name"] for row in all_jobs])
                     else:
-                        logger.warning("Spark session not available, cannot get all modules")
+                        logger.warning("Spark session not available, cannot get all jobs")
                 except Exception as e:
-                    logger.warning(f"Could not get all modules for YAML update: {str(e)}")
+                    logger.warning(f"Could not get all jobs for YAML update: {str(e)}")
 
             # Update jobs if changes detected
-            if modules_to_update and self.auto_update_jobs:
+            if jobs_to_update and self.auto_update_jobs:
                 logger.info(
-                    f"Updating {len(modules_to_update)} module(s) due to metadata changes: {list(modules_to_update)}"
+                    f"Updating {len(jobs_to_update)} job(s) due to metadata changes: {list(jobs_to_update)}"
                 )
 
                 try:
-                    # Use orchestrator to update changed modules
-                    updated_module_jobs = []
-                    for module_name in modules_to_update:
+                    # Use orchestrator to update changed jobs
+                    updated_jobs_list = []
+                    for job_name in jobs_to_update:
                         try:
-                            job_id = self.orchestrator.create_or_update_job(module_name)
-                            updated_module_jobs.append({"module": module_name, "job_id": job_id})
-                        except Exception as module_error:
-                            logger.error(f"Failed to update job for module '{module_name}': {str(module_error)}")
-                            result["errors"].append(f"Module '{module_name}' update error: {str(module_error)}")
+                            job_id = self.orchestrator.create_or_update_job(job_name)
+                            updated_jobs_list.append({"job": job_name, "job_id": job_id})
+                        except Exception as job_error:
+                            logger.error(f"Failed to update job for job '{job_name}': {str(job_error)}")
+                            result["errors"].append(f"Job '{job_name}' update error: {str(job_error)}")
 
-                    result["jobs_updated"] = updated_module_jobs
+                    result["jobs_updated"] = updated_jobs_list
 
                 except Exception as e:
                     error_msg = f"Failed to update jobs: {str(e)}"

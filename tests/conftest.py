@@ -49,17 +49,16 @@ def mock_workspace_client():
 
 
 @pytest.fixture
-def sample_source_data():
-    """Sample source data from control table."""
+def sample_task_data():
+    """Sample task data from control table."""
     return {
-        'source_id': 'test_source_1',
-        'module_name': 'test_module',
-        'source_type': 'sql',
-        'execution_order': 1,
-        'source_config': '{"catalog": "bronze", "schema": "raw_data", "table": "source_table"}',
-        'target_config': '{"catalog": "bronze", "schema": "raw_data", "table": "target_table"}',
-        'transformation_config': '{"task_type": "notebook", "notebook_path": "/Workspace/test/notebook"}',
-        'is_active': True
+        'job_name': 'test_job',
+        'task_key': 'test_task_1',
+        'depends_on': '[]',
+        'task_type': 'notebook',
+        'parameters': '{"catalog": "bronze", "schema": "raw_data", "source_table": "source_table", "target_table": "target_table"}',
+        'task_config': '{"file_path": "/Workspace/test/notebook"}',
+        'disabled': False
     }
 
 
@@ -67,19 +66,20 @@ def sample_source_data():
 def sample_yaml_config():
     """Sample YAML configuration."""
     return {
-        'modules': [
+        'jobs': [
             {
-                'module_name': 'test_module',
-                'sources': [
+                'job_name': 'test_job',
+                'tasks': [
                     {
-                        'source_id': 'source1',
-                        'execution_order': 1,
-                        'source_type': 'sql',
-                        'source_config': {'catalog': 'bronze', 'schema': 'raw_data', 'table': 'source_table'},
-                        'target_config': {'catalog': 'bronze', 'schema': 'raw_data', 'table': 'target_table'},
-                        'transformation_config': {
-                            'task_type': 'notebook',
-                            'notebook_path': '/Workspace/test/notebook'
+                        'task_key': 'task1',
+                        'task_type': 'notebook',
+                        'depends_on': '[]',
+                        'file_path': '/Workspace/test/notebook',
+                        'parameters': {
+                            'catalog': 'bronze',
+                            'schema': 'raw_data',
+                            'source_table': 'source_table',
+                            'target_table': 'target_table'
                         }
                     }
                 ]
@@ -92,11 +92,11 @@ def sample_yaml_config():
 def sample_metadata_changes():
     """Sample metadata changes response."""
     return {
-        'new_modules': ['module1'],
-        'updated_modules': ['module2'],
-        'deactivated_modules': [],
-        'changed_sources': [
-            {'source_id': 'source1', 'module_name': 'module1', 'action': 'new'}
+        'new_jobs': ['job1'],
+        'updated_jobs': ['job2'],
+        'disabled_jobs': [],
+        'changed_tasks': [
+            {'task_key': 'task1', 'job_name': 'job1', 'action': 'new'}
         ]
     }
 

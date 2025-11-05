@@ -1,2 +1,2 @@
-"""Tests for lakeflow_job_meta package"""
+"""Tests for lakeflow_jobs_meta package"""
 

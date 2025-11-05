@@ -1,7 +1,7 @@
 """Tests for utility functions"""
 
 import pytest
-from lakeflow_job_meta.utils import sanitize_task_key, validate_notebook_path
+from lakeflow_jobs_meta.utils import sanitize_task_key, validate_notebook_path
 
 
 class TestSanitizeTaskKey:

@@ -46,42 +46,12 @@
 - ✅ Backward compatible with existing notebook-only configs
 - ✅ Supports SQL task configurations
 
-### Technical Details
-
-#### Task Type Support
-
-**Notebook Tasks:**
-```yaml
-transformation_config:
-  task_type: "notebook"
-  notebook_path: "/path/to/notebook"
-```
-
-**SQL Query Tasks:**
-```yaml
-transformation_config:
-  task_type: "sql_query"
-  sql_task:
-    warehouse_id: "your-warehouse-id"
-    sql_query: "SELECT * FROM table"
-    parameters: {}
-```
-
-**SQL File Tasks:**
-```yaml
-transformation_config:
-  task_type: "sql_file"
-  sql_task:
-    warehouse_id: "your-warehouse-id"
-    sql_file_path: "/Workspace/path/to/file.sql"
-    parameters: {}
-```
 
 ### Folder Structure
 
 ```
 .
-├── lakeflow_job_meta/    # Main package
+├── lakeflow_jobs_meta/   # Main package
 ├── examples/              # Example files and templates
 │   ├── orchestrator_example.ipynb  # Orchestrator example
 │   ├── sql_file_task/    # SQL file task examples

@@ -1,6 +1,6 @@
 """Tests for constants"""
 
-from lakeflow_job_meta.constants import (
+from lakeflow_jobs_meta.constants import (
     TASK_TIMEOUT_SECONDS,
     JOB_TIMEOUT_SECONDS,
     MAX_CONCURRENT_RUNS,

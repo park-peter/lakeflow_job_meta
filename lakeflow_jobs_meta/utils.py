@@ -4,17 +4,17 @@ import re
 from typing import Optional, Dict, Any
 
 
-def sanitize_task_key(source_id: str) -> str:
-    """Sanitize source_id to create a valid task key.
+def sanitize_task_key(task_key: str) -> str:
+    """Sanitize task_key to create a valid task key.
     
     Args:
-        source_id: The source identifier
+        task_key: The task identifier
         
     Returns:
         Sanitized task key safe for use in Databricks job definitions
     """
     # Replace invalid characters with underscores and ensure it starts with alphanumeric
-    sanitized = re.sub(r'[^a-zA-Z0-9_]', '_', str(source_id))
+    sanitized = re.sub(r'[^a-zA-Z0-9_]', '_', str(task_key))
     # Remove consecutive underscores
     sanitized = re.sub(r'_+', '_', sanitized)
     # Ensure it doesn't start or end with underscore

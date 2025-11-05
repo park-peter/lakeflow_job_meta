@@ -6,13 +6,13 @@ with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
 setup(
-    name="lakeflow-job-meta",
+    name="lakeflow-jobs-meta",
     version="0.1.0",
     author="Your Name",
     description="Metadata-driven framework for orchestrating Databricks Lakeflow Jobs",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/yourusername/lakeflow-job-meta",
+    url="https://github.com/yourusername/lakeflow-jobs-meta",
     packages=find_packages(),
     classifiers=[
         "Development Status :: 3 - Alpha",
@@ -34,7 +34,7 @@ setup(
     ],
     entry_points={
         "console_scripts": [
-            "lakeflow-job-meta=lakeflow_job_meta.main:main",
+            "lakeflow-jobs-meta=lakeflow_jobs_meta.main:main",
         ],
     },
     include_package_data=True,

@@ -4,30 +4,31 @@ import json
 import logging
 from typing import Dict, Any, Optional
 from databricks.sdk.service.jobs import Task, NotebookTask, SqlTask, SqlTaskQuery, SqlTaskFile, TaskDependency, Source
-from lakeflow_job_meta.constants import (
+from lakeflow_jobs_meta.constants import (
     TASK_TYPE_NOTEBOOK,
     TASK_TYPE_SQL_QUERY,
     TASK_TYPE_SQL_FILE,
     TASK_TIMEOUT_SECONDS,
 )
-from lakeflow_job_meta.utils import sanitize_task_key, validate_notebook_path
+from lakeflow_jobs_meta.utils import sanitize_task_key, validate_notebook_path
 
 logger = logging.getLogger(__name__)
 
 
 def create_task_from_config(
-    source: Dict[str, Any],
+    task_data: Dict[str, Any],
     control_table: str,
-    previous_order_tasks: Optional[list] = None,
+    depends_on_task_keys: Optional[List[str]] = None,
     cluster_id: Optional[str] = None,
     default_warehouse_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Create a task configuration from source metadata.
+    """Create a task configuration from task metadata.
 
     Args:
-        source: Source dictionary from control table (can be dict or Row-like object)
-        previous_order_tasks: List of task keys from previous execution order
+        task_data: Task dictionary from control table (can be dict or Row-like object)
+        depends_on_task_keys: List of task_key strings this task depends on
         cluster_id: Optional cluster ID for the task
+        default_warehouse_id: Optional default SQL warehouse ID for SQL tasks
 
     Returns:
         Task configuration dictionary
@@ -35,120 +36,126 @@ def create_task_from_config(
     Raises:
         ValueError: If task configuration is invalid
     """
-    if not isinstance(source, dict):
-        if hasattr(source, "asDict"):
-            source = source.asDict()
+    if not isinstance(task_data, dict):
+        if hasattr(task_data, "asDict"):
+            task_data = task_data.asDict()
         else:
             try:
-                source = dict(source)
+                task_data = dict(task_data)
             except (TypeError, ValueError):
                 pass
 
-    task_key = sanitize_task_key(source["source_id"])
+    task_key_raw = task_data.get("task_key")
+    if not task_key_raw:
+        raise ValueError("Task data must have 'task_key' field")
+    task_key = sanitize_task_key(task_key_raw)
 
+    task_type = task_data.get("task_type")
+    if not task_type:
+        raise ValueError(f"Task '{task_key}' must have 'task_type' field")
+
+    # Parse task_config JSON
     try:
-        trans_config = json.loads(source["transformation_config"])
+        task_config_json = json.loads(task_data.get("task_config", "{}"))
     except (json.JSONDecodeError, TypeError) as e:
-        raise ValueError(f"Invalid transformation_config JSON for source_id '{source['source_id']}': {str(e)}")
+        raise ValueError(f"Invalid task_config JSON for task_key '{task_key}': {str(e)}")
 
-    task_type = trans_config.get("task_type", TASK_TYPE_NOTEBOOK)
+    # Parse parameters JSON
+    try:
+        parameters_json = json.loads(task_data.get("parameters", "{}"))
+    except (json.JSONDecodeError, TypeError) as e:
+        raise ValueError(f"Invalid parameters JSON for task_key '{task_key}': {str(e)}")
 
     if task_type == TASK_TYPE_NOTEBOOK:
-        task_config = create_notebook_task_config(source, task_key, trans_config, control_table)
+        task_config = create_notebook_task_config(task_key, task_config_json, parameters_json, control_table)
     elif task_type == TASK_TYPE_SQL_QUERY:
-        task_config = create_sql_query_task_config(source, task_key, trans_config, default_warehouse_id)
+        task_config = create_sql_query_task_config(task_key, task_config_json, parameters_json, default_warehouse_id)
     elif task_type == TASK_TYPE_SQL_FILE:
-        task_config = create_sql_file_task_config(source, task_key, trans_config, default_warehouse_id)
+        task_config = create_sql_file_task_config(task_key, task_config_json, parameters_json, default_warehouse_id)
     else:
-        raise ValueError(f"Unsupported task_type '{task_type}' for source_id '{source['source_id']}'")
+        raise ValueError(f"Unsupported task_type '{task_type}' for task_key '{task_key}'")
 
-    if previous_order_tasks:
-        task_config["depends_on"] = [{"task_key": task} for task in previous_order_tasks]
+    if depends_on_task_keys:
+        task_config["depends_on"] = [{"task_key": task_key} for task_key in depends_on_task_keys]
     
-    # Add task-level timeout_seconds if specified in transformation_config
-    if "timeout_seconds" in trans_config:
-        task_config["timeout_seconds"] = trans_config["timeout_seconds"]
+    # Add task-level timeout_seconds if specified in task_config
+    if "timeout_seconds" in task_config_json:
+        task_config["timeout_seconds"] = task_config_json["timeout_seconds"]
+    
+    # Set disabled flag from task metadata (defaults to False if not specified)
+    task_config["disabled"] = task_data.get("disabled", False)
 
     return task_config
 
 
 def create_notebook_task_config(
-    source: Dict[str, Any], task_key: str, trans_config: Dict[str, Any], control_table: str
+    task_key: str, task_config: Dict[str, Any], parameters: Dict[str, Any], control_table: str
 ) -> Dict[str, Any]:
     """Create notebook task configuration.
 
     Args:
-        source: Source dictionary
         task_key: Sanitized task key
-        trans_config: Transformation configuration
+        task_config: Task configuration dictionary (contains file_path, timeout_seconds, etc.)
+        parameters: Task parameters dictionary
         control_table: Name of the control table containing metadata
 
     Returns:
         Notebook task configuration dictionary
     """
-    if not isinstance(source, dict):
-        if hasattr(source, "asDict"):
-            source = source.asDict()
-        else:
-            try:
-                source = dict(source)
-            except (TypeError, ValueError):
-                pass
+    file_path = task_config.get("file_path")
+    if not file_path:
+        raise ValueError(f"Missing file_path in task_config for task_key: {task_key}")
 
-    notebook_path = trans_config.get("notebook_path")
-    if not notebook_path:
-        raise ValueError(f"Missing notebook_path in transformation_config for source_id: {source['source_id']}")
+    validate_notebook_path(file_path)
 
-    validate_notebook_path(notebook_path)
+    # Build base_parameters from task parameters + framework parameters
+    base_parameters = dict(parameters)
+    base_parameters["task_key"] = task_key
+    base_parameters["control_table"] = control_table
 
     return {
         "task_key": task_key,
         "task_type": TASK_TYPE_NOTEBOOK,
         "notebook_task": {
-            "notebook_path": notebook_path,
-            "base_parameters": {"source_id": source["source_id"], "control_table": control_table},
+            "notebook_path": file_path,
+            "base_parameters": base_parameters,
         },
     }
 
 
-def _build_sql_task_parameters(
-    source: Dict[str, Any], trans_config: Dict[str, Any]
-) -> Dict[str, str]:
-    """Build SQL task parameters from sql_task.parameters configuration.
+def _build_sql_task_parameters(parameters: Dict[str, Any]) -> Dict[str, str]:
+    """Build SQL task parameters from parameters dictionary.
     
     Parameters can contain static values or Databricks dynamic value references.
     See: https://docs.databricks.com/aws/en/jobs/dynamic-value-references
     
     Args:
-        source: Source dictionary (not used, kept for API compatibility)
-        trans_config: Transformation configuration
+        parameters: Parameters dictionary
         
     Returns:
         Dictionary of parameter names to string values
     """
-    sql_config = trans_config.get("sql_task", {})
-    params = sql_config.get("parameters", {})
-    return {k: str(v) for k, v in params.items()} if params else {}
+    return {k: str(v) for k, v in parameters.items()} if parameters else {}
 
 
 def create_sql_query_task_config(
-    source: Dict[str, Any], task_key: str, trans_config: Dict[str, Any], default_warehouse_id: Optional[str] = None
+    task_key: str, task_config: Dict[str, Any], parameters: Dict[str, Any], default_warehouse_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """Create SQL query task configuration.
 
     Note: warehouse_id is REQUIRED for SQL tasks per Databricks Jobs API.
-    If not provided in sql_task config, will use default_warehouse_id if available.
+    If not provided in task_config, will use default_warehouse_id if available.
 
     SQL queries should use parameter syntax (:parameter_name). Parameters are defined in 
-    sql_task.parameters and can use Databricks dynamic value references.
+    parameters dictionary and can use Databricks dynamic value references.
     
     See: https://docs.databricks.com/aws/en/jobs/dynamic-value-references
 
     Args:
-        source: Source dictionary (can be dict or Row-like object)
         task_key: Sanitized task key
-        trans_config: Transformation configuration
-        default_warehouse_id: Optional default warehouse ID to use if not specified in config
+        task_config: Task configuration dictionary (contains warehouse_id, sql_query, query_id, etc.)
+        parameters: Task parameters dictionary
+        default_warehouse_id: Optional default SQL warehouse ID to use if not specified in config
 
     Returns:
         SQL query task configuration dictionary
@@ -156,35 +163,27 @@ def create_sql_query_task_config(
     Raises:
         ValueError: If warehouse_id is missing or neither sql_query nor query_id is provided
     """
-    if not isinstance(source, dict):
-        if hasattr(source, "asDict"):
-            source = source.asDict()
-        else:
-            try:
-                source = dict(source)
-            except (TypeError, ValueError):
-                pass
-
-    sql_config = trans_config.get("sql_task", {})
-
-    warehouse_id = sql_config.get("warehouse_id") or default_warehouse_id
+    warehouse_id = task_config.get("warehouse_id")
+    if warehouse_id and warehouse_id.lower() in ("your-warehouse-id", "your_warehouse_id"):
+        warehouse_id = None
+    warehouse_id = warehouse_id or default_warehouse_id
     if not warehouse_id:
         raise ValueError(
-            f"Missing warehouse_id in sql_task config for source_id: {source['source_id']}. "
-            f"Either specify warehouse_id in the task config or provide default_warehouse_id to orchestrator."
+            f"Missing warehouse_id for task_key: {task_key}. "
+            f"Either specify warehouse_id in task_config or provide default_warehouse_id to orchestrator."
         )
 
-    sql_query = sql_config.get("sql_query")
-    query_id = sql_config.get("query_id")
+    sql_query = task_config.get("sql_query")
+    query_id = task_config.get("query_id")
 
     if not sql_query and not query_id:
         raise ValueError(
-            f"Must provide either sql_query or query_id in sql_task config for source_id: {source['source_id']}"
+            f"Must provide either sql_query or query_id for task_key: {task_key}"
         )
 
-    task_parameters = _build_sql_task_parameters(source, trans_config)
+    task_parameters = _build_sql_task_parameters(parameters)
 
-    task_config = {
+    result = {
         "task_key": task_key,
         "task_type": TASK_TYPE_SQL_QUERY,
         "sql_task": {
@@ -194,64 +193,55 @@ def create_sql_query_task_config(
     }
 
     if query_id:
-        task_config["sql_task"]["query"] = {"query_id": query_id}
+        result["sql_task"]["query"] = {"query_id": query_id}
     else:
-        task_config["sql_task"]["query"] = {"query": sql_query}
+        result["sql_task"]["query"] = {"query": sql_query}
 
-    return task_config
+    return result
 
 
 def create_sql_file_task_config(
-    source: Dict[str, Any], task_key: str, trans_config: Dict[str, Any], default_warehouse_id: Optional[str] = None
+    task_key: str, task_config: Dict[str, Any], parameters: Dict[str, Any], default_warehouse_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """Create SQL file task configuration.
 
     SQL file tasks reference SQL files directly. SQL files should use parameter syntax 
-    (:parameter_name). Parameters are defined in sql_task.parameters and can use Databricks 
+    (:parameter_name). Parameters are defined in parameters dictionary and can use Databricks 
     dynamic value references.
     
     See: https://docs.databricks.com/aws/en/jobs/dynamic-value-references
 
     Note: warehouse_id is REQUIRED for SQL tasks per Databricks Jobs API.
-    If not provided in sql_task config, will use default_warehouse_id if available.
+    If not provided in task_config, will use default_warehouse_id if available.
 
     Args:
-        source: Source dictionary
         task_key: Sanitized task key
-        trans_config: Transformation configuration
-        default_warehouse_id: Optional default warehouse ID to use if not specified in config
+        task_config: Task configuration dictionary (contains warehouse_id, file_path, etc.)
+        parameters: Task parameters dictionary
+        default_warehouse_id: Optional default SQL warehouse ID to use if not specified in config
 
     Returns:
         SQL file task configuration dictionary
 
     Raises:
-        ValueError: If warehouse_id or sql_file_path is missing
+        ValueError: If warehouse_id or file_path is missing
     """
-    if not isinstance(source, dict):
-        if hasattr(source, "asDict"):
-            source = source.asDict()
-        else:
-            try:
-                source = dict(source)
-            except (TypeError, ValueError):
-                pass
-
-    sql_config = trans_config.get("sql_task", {})
-
-    warehouse_id = sql_config.get("warehouse_id") or default_warehouse_id
+    warehouse_id = task_config.get("warehouse_id")
+    if warehouse_id and warehouse_id.lower() in ("your-warehouse-id", "your_warehouse_id"):
+        warehouse_id = None
+    warehouse_id = warehouse_id or default_warehouse_id
     if not warehouse_id:
         raise ValueError(
-            f"Missing warehouse_id in sql_task config for source_id: {source['source_id']}. "
-            f"Either specify warehouse_id in the task config or provide default_warehouse_id to orchestrator."
+            f"Missing warehouse_id for task_key: {task_key}. "
+            f"Either specify warehouse_id in task_config or provide default_warehouse_id to orchestrator."
         )
 
-    sql_file_path = sql_config.get("sql_file_path")
-    if not sql_file_path:
-        raise ValueError(f"Missing sql_file_path in sql_task config for source_id: {source['source_id']}")
+    file_path = task_config.get("file_path")
+    if not file_path:
+        raise ValueError(f"Missing file_path for task_key: {task_key}")
 
-    file_source = sql_config.get("file_source", "WORKSPACE")
-
-    task_parameters = _build_sql_task_parameters(source, trans_config)
+    file_source = task_config.get("file_source", "WORKSPACE")
+    task_parameters = _build_sql_task_parameters(parameters)
 
     return {
         "task_key": task_key,
@@ -259,7 +249,7 @@ def create_sql_file_task_config(
         "sql_task": {
             "warehouse_id": warehouse_id,
             "file": {
-                "path": sql_file_path,
+                "path": file_path,
                 "source": file_source,
             },
             "parameters": task_parameters,
@@ -286,10 +276,14 @@ def convert_task_config_to_sdk_task(task_config: Dict[str, Any], cluster_id: Opt
     
     # Get task-level timeout_seconds if specified, otherwise use default
     task_timeout = task_config.get("timeout_seconds", TASK_TIMEOUT_SECONDS)
+    task_disabled = task_config.get("disabled", False)
 
+    # Create Task object (disabled is handled in serialization, not in constructor)
+    task_obj = None
+    
     if task_type == TASK_TYPE_NOTEBOOK:
         notebook_config = task_config["notebook_task"]
-        return Task(
+        task_obj = Task(
             task_key=task_key,
             notebook_task=NotebookTask(
                 notebook_path=notebook_config["notebook_path"],
@@ -314,7 +308,7 @@ def convert_task_config_to_sdk_task(task_config: Dict[str, Any], cluster_id: Opt
         else:
             raise ValueError(f"SQL query task '{task_key}' must have either query_id or query in query config")
 
-        return Task(
+        task_obj = Task(
             task_key=task_key,
             sql_task=SqlTask(
                 warehouse_id=sql_config["warehouse_id"], query=sql_query, parameters=sql_config.get("parameters", {})
@@ -343,7 +337,7 @@ def convert_task_config_to_sdk_task(task_config: Dict[str, Any], cluster_id: Opt
         
         sql_file = SqlTaskFile(path=file_path, source=source_enum)
 
-        return Task(
+        task_obj = Task(
             task_key=task_key,
             sql_task=SqlTask(
                 warehouse_id=sql_config["warehouse_id"],
@@ -356,6 +350,12 @@ def convert_task_config_to_sdk_task(task_config: Dict[str, Any], cluster_id: Opt
 
     else:
         raise ValueError(f"Unsupported task_type '{task_type}' for task_key '{task_key}'")
+    
+    # Set disabled attribute after creation (SDK Task doesn't accept it in constructor)
+    if task_disabled:
+        task_obj.disabled = True
+    
+    return task_obj
 
 
 def serialize_task_for_api(task: Task) -> Dict[str, Any]:
@@ -376,6 +376,9 @@ def serialize_task_for_api(task: Task) -> Dict[str, Any]:
 
     if task.timeout_seconds:
         result["timeout_seconds"] = task.timeout_seconds
+    
+    if hasattr(task, "disabled") and task.disabled is not None:
+        result["disabled"] = task.disabled
 
     if task.existing_cluster_id:
         result["existing_cluster_id"] = task.existing_cluster_id

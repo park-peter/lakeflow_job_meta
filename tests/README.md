@@ -21,7 +21,7 @@ pip install -e ".[dev]"
 pytest
 
 # Run with coverage
-pytest --cov=lakeflow_job_meta --cov-report=html --cov-report=term-missing
+pytest --cov=lakeflow_jobs_meta --cov-report=html --cov-report=term-missing
 
 # Run specific test module
 pytest tests/test_utils.py -v
@@ -48,7 +48,7 @@ The test suite uses mocking extensively to avoid requiring actual Databricks or 
 
 When adding new functionality:
 
-1. Create test file: `tests/test_<module_name>.py`
+1. Create test file: `tests/test_<feature_name>.py`
 2. Use fixtures from `conftest.py` when available
 3. Mock external dependencies (Spark, Databricks SDK, dbutils)
 4. Test both success and error cases
@@ -56,9 +56,9 @@ When adding new functionality:
 
 Example:
 ```python
-def test_create_task_with_invalid_source_id(self):
-    """Test error handling when source_id is invalid."""
+def test_create_task_with_invalid_task_key(self):
+    """Test error handling when task_key is invalid."""
     with pytest.raises(ValueError):
-        create_task_from_config(invalid_source_data)
+        create_task_from_config(invalid_task_data)
 ```
 
