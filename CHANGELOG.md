@@ -7,44 +7,21 @@
 #### Core Framework
 - ✅ Modular code structure (`src/` directory)
 - ✅ Support for multiple task types:
-  - Notebook Tasks
-  - SQL Query Tasks (inline SQL)
-  - SQL File Tasks (SQL from files)
+  - Notebook tasks
+  - Python wheels tasks
+  - Scala tasks
+  - SQL query tasks (w/ support for inline SQL)
+  - SQL file tasks (SQL from files)
+  - DBT Tasks
 - ✅ Dynamic job generation from metadata
 - ✅ Job lifecycle management (create/update/track)
 - ✅ Execution order and dependency management
 - ✅ Comprehensive error handling and logging
 
-#### Examples
-- ✅ 5 SQL task examples:
-  1. Data Quality Check (null rate validation)
-  2. Daily Aggregations
-  3. Bronze to Silver Transformation
-  4. Data Freshness Check
-  5. Incremental Load
-- ✅ Sample ingestion notebook demonstrating framework contract
-- ✅ Comprehensive metadata examples YAML
-
 #### Documentation
 - ✅ README with quick start guide
 - ✅ Code review documentation
 - ✅ Architecture analysis
-
-### Changed
-
-#### Code Organization
-- ✅ Refactored monolithic notebook into modular Python packages
-- ✅ Separated concerns:
-  - `constants.py`: Configuration constants
-  - `utils.py`: Utility functions
-  - `task_builders.py`: Task creation logic
-  - `orchestrator.py`: Main orchestration functions
-- ✅ Improved code reusability and maintainability
-
-#### Metadata Schema
-- ✅ Enhanced to support `task_type` field
-- ✅ Backward compatible with existing notebook-only configs
-- ✅ Supports SQL task configurations
 
 
 ### Folder Structure
@@ -64,9 +41,6 @@
 ### Next Steps (Planned)
 
 - [ ] Python Script Tasks
-- [ ] Pipeline Tasks (Delta Live Tables)
 - [ ] Enhanced error handling with retry logic
 - [ ] Execution monitoring dashboard
 - [ ] Data quality framework
-- [ ] Unit tests
-

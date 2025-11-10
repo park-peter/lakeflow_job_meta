@@ -14,7 +14,19 @@ from databricks.sdk.service.jobs import (
     TriggerSettings,
     CronSchedule,
     PauseStatus,
+    JobCluster,
+    TaskNotificationSettings,
+    JobEmailNotifications,
 )
+
+try:
+    from databricks.sdk.service.compute import ClusterSpec
+except ImportError:
+    ClusterSpec = None
+try:
+    from databricks.sdk.service.jobs import Environment
+except ImportError:
+    Environment = None
 
 try:
     from databricks.sdk.service.jobs import TaskRetryMode
@@ -90,6 +102,47 @@ class JobSettingsWithDictTasks(JobSettings):
                     result["schedule"] = self.schedule
             else:
                 result["schedule"] = self.schedule
+        if hasattr(self, "tags") and self.tags is not None:
+            result["tags"] = self.tags
+        if hasattr(self, "job_clusters") and self.job_clusters is not None:
+            result["job_clusters"] = [
+                (
+                    cluster.as_dict()
+                    if hasattr(cluster, "as_dict")
+                    else (
+                        cluster
+                        if isinstance(cluster, dict)
+                        else {
+                            "job_cluster_key": cluster.job_cluster_key,
+                            "new_cluster": (
+                                cluster.new_cluster.as_dict()
+                                if hasattr(cluster.new_cluster, "as_dict")
+                                else (
+                                    cluster.new_cluster
+                                    if isinstance(cluster.new_cluster, dict)
+                                    else cluster.new_cluster
+                                )
+                            ),
+                        }
+                    )
+                )
+                for cluster in self.job_clusters
+            ]
+        if hasattr(self, "environments") and self.environments is not None:
+            result["environments"] = [
+                (env.as_dict() if hasattr(env, "as_dict") else env if isinstance(env, dict) else env)
+                for env in self.environments
+            ]
+        if hasattr(self, "notification_settings") and self.notification_settings is not None:
+            if isinstance(self.notification_settings, dict):
+                result["notification_settings"] = self.notification_settings
+            elif hasattr(self.notification_settings, "as_dict"):
+                try:
+                    result["notification_settings"] = self.notification_settings.as_dict()
+                except AttributeError:
+                    result["notification_settings"] = self.notification_settings
+            else:
+                result["notification_settings"] = self.notification_settings
         return result
 
 
@@ -370,6 +423,10 @@ class JobOrchestrator:
             "continuous": None,
             "trigger": None,
             "schedule": None,
+            "tags": None,
+            "job_clusters": None,
+            "environments": None,
+            "notification_settings": None,
         }
 
         if first_task:
@@ -394,7 +451,24 @@ class JobOrchestrator:
             task_config = json.loads(task_config_str) if isinstance(task_config_str, str) else task_config_str
             job_config = task_config.get("_job_config", {})
             if job_config:
-                default_settings.update({k: v for k, v in job_config.items() if k in default_settings})
+                # Update standard settings
+                default_settings.update(
+                    {
+                        k: v
+                        for k, v in job_config.items()
+                        if k
+                        in ["timeout_seconds", "max_concurrent_runs", "queue", "continuous", "trigger", "schedule"]
+                    }
+                )
+                # Extract new job-level settings
+                if "tags" in job_config:
+                    default_settings["tags"] = job_config["tags"]
+                if "job_clusters" in job_config:
+                    default_settings["job_clusters"] = job_config["job_clusters"]
+                if "_job_environments" in job_config:
+                    default_settings["environments"] = job_config["_job_environments"]
+                if "notification_settings" in job_config:
+                    default_settings["notification_settings"] = job_config["notification_settings"]
         except (json.JSONDecodeError, TypeError):
             pass
 
@@ -613,7 +687,7 @@ class JobOrchestrator:
         if stored_job_id:
             try:
                 job_settings = JobSettingsWithDictTasks(
-                    name=f"[Lakeflow Job Metadata] {job_name}",
+                    name=f"[Lakeflow Jobs Meta] {job_name}",
                     tasks=sdk_task_dicts,
                     max_concurrent_runs=job_settings_config["max_concurrent_runs"],
                     timeout_seconds=job_settings_config["timeout_seconds"],
@@ -634,6 +708,64 @@ class JobOrchestrator:
                 if job_settings_config.get("schedule"):
                     job_settings.schedule = _convert_job_setting_to_sdk_object(
                         "schedule", job_settings_config["schedule"]
+                    )
+
+                # Add tags, job_clusters, environments, and notification_settings if specified
+                if job_settings_config.get("tags"):
+                    job_settings.tags = job_settings_config["tags"]
+                job_clusters_config = job_settings_config.get("job_clusters")
+                if job_clusters_config and isinstance(job_clusters_config, list):
+                    job_clusters_list = []
+                    for cluster_dict in job_clusters_config:
+                        if isinstance(cluster_dict, dict):
+                            new_cluster_dict = cluster_dict.get("new_cluster", {})
+                            if ClusterSpec and new_cluster_dict:
+                                try:
+                                    new_cluster_obj = ClusterSpec(**new_cluster_dict)
+                                except Exception:
+                                    new_cluster_obj = new_cluster_dict
+                            else:
+                                new_cluster_obj = new_cluster_dict
+                            job_clusters_list.append(
+                                JobCluster(
+                                    job_cluster_key=cluster_dict["job_cluster_key"],
+                                    new_cluster=new_cluster_obj,
+                                )
+                            )
+                        else:
+                            job_clusters_list.append(cluster_dict)
+                    job_settings.job_clusters = job_clusters_list
+                environments_config = job_settings_config.get("environments")
+                if environments_config and isinstance(environments_config, list):
+                    environments_list = []
+                    for env_dict in environments_config:
+                        if isinstance(env_dict, dict) and Environment:
+                            try:
+                                environments_list.append(Environment(**env_dict))
+                            except Exception:
+                                environments_list.append(env_dict)
+                        else:
+                            environments_list.append(env_dict)
+                    job_settings.environments = environments_list
+                notif_config = job_settings_config.get("notification_settings")
+                if notif_config and isinstance(notif_config, dict):
+                    email_notif_obj = None
+                    if "email_notifications" in notif_config:
+                        email_config = notif_config["email_notifications"]
+                        if isinstance(email_config, dict):
+                            email_notif_obj = JobEmailNotifications(
+                                on_start=email_config.get("on_start", []),
+                                on_success=email_config.get("on_success", []),
+                                on_failure=email_config.get("on_failure", []),
+                                on_duration_warning_threshold_exceeded=email_config.get(
+                                    "on_duration_warning_threshold_exceeded", []
+                                ),
+                            )
+                    job_settings.notification_settings = TaskNotificationSettings(
+                        email_notifications=email_notif_obj,
+                        no_alert_for_skipped_runs=notif_config.get("no_alert_for_skipped_runs"),
+                        no_alert_for_canceled_runs=notif_config.get("no_alert_for_canceled_runs"),
+                        alert_on_last_attempt=notif_config.get("alert_on_last_attempt"),
                     )
 
                 self.workspace_client.jobs.update(
@@ -679,7 +811,7 @@ class JobOrchestrator:
         # Create new job
         try:
             job_settings_kwargs = {
-                "name": f"[Lakeflow Job Metadata] {job_name}",
+                "name": f"[Lakeflow Jobs Meta] {job_name}",
                 "tasks": sdk_task_objects,
                 "max_concurrent_runs": job_settings_config["max_concurrent_runs"],
                 "timeout_seconds": job_settings_config["timeout_seconds"],
@@ -700,6 +832,64 @@ class JobOrchestrator:
             if job_settings_config.get("schedule"):
                 job_settings_kwargs["schedule"] = _convert_job_setting_to_sdk_object(
                     "schedule", job_settings_config["schedule"]
+                )
+
+            # Add tags, job_clusters, environments, and notification_settings if specified
+            if job_settings_config.get("tags"):
+                job_settings_kwargs["tags"] = job_settings_config["tags"]
+            job_clusters_config = job_settings_config.get("job_clusters")
+            if job_clusters_config and isinstance(job_clusters_config, list):
+                job_clusters_list = []
+                for cluster_dict in job_clusters_config:
+                    if isinstance(cluster_dict, dict):
+                        new_cluster_dict = cluster_dict.get("new_cluster", {})
+                        if ClusterSpec and new_cluster_dict:
+                            try:
+                                new_cluster_obj = ClusterSpec(**new_cluster_dict)
+                            except Exception:
+                                new_cluster_obj = new_cluster_dict
+                        else:
+                            new_cluster_obj = new_cluster_dict
+                        job_clusters_list.append(
+                            JobCluster(
+                                job_cluster_key=cluster_dict["job_cluster_key"],
+                                new_cluster=new_cluster_obj,
+                            )
+                        )
+                    else:
+                        job_clusters_list.append(cluster_dict)
+                job_settings_kwargs["job_clusters"] = job_clusters_list
+            environments_config = job_settings_config.get("environments")
+            if environments_config and isinstance(environments_config, list):
+                environments_list = []
+                for env_dict in environments_config:
+                    if isinstance(env_dict, dict) and Environment:
+                        try:
+                            environments_list.append(Environment(**env_dict))
+                        except Exception:
+                            environments_list.append(env_dict)
+                    else:
+                        environments_list.append(env_dict)
+                job_settings_kwargs["environments"] = environments_list
+            notif_config = job_settings_config.get("notification_settings")
+            if notif_config and isinstance(notif_config, dict):
+                email_notif_obj = None
+                if "email_notifications" in notif_config:
+                    email_config = notif_config["email_notifications"]
+                    if isinstance(email_config, dict):
+                        email_notif_obj = JobEmailNotifications(
+                            on_start=email_config.get("on_start", []),
+                            on_success=email_config.get("on_success", []),
+                            on_failure=email_config.get("on_failure", []),
+                            on_duration_warning_threshold_exceeded=email_config.get(
+                                "on_duration_warning_threshold_exceeded", []
+                            ),
+                        )
+                job_settings_kwargs["notification_settings"] = TaskNotificationSettings(
+                    email_notifications=email_notif_obj,
+                    no_alert_for_skipped_runs=notif_config.get("no_alert_for_skipped_runs"),
+                    no_alert_for_canceled_runs=notif_config.get("no_alert_for_canceled_runs"),
+                    alert_on_last_attempt=notif_config.get("alert_on_last_attempt"),
                 )
 
             created_job = self.workspace_client.jobs.create(**job_settings_kwargs)

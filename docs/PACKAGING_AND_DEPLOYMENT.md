@@ -2,7 +2,7 @@
 
 ## Overview
 
-Lakeflow Job Meta is packaged as a Python library that can be installed and run as a single task in a Databricks Lakeflow Job.
+Lakeflow Jobs Meta is packaged as a Python library that can be installed and run as a single task in a Databricks Lakeflow Jobs.
 
 ## Package Structure
 
@@ -58,7 +58,7 @@ pip install dist/lakeflow_jobs_meta-0.1.0-py3-none-any.whl
 %pip install lakeflow-jobs-meta
 ```
 
-## Usage as a Lakeflow Job Task
+## Usage as a Lakeflow Jobs Task
 
 ### Step 1: Create Monitoring Job
 

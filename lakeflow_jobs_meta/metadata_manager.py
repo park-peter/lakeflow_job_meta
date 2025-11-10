@@ -212,7 +212,7 @@ class MetadataManager:
                 parameters = task.get("parameters", {})
 
                 # Extract task-specific config
-                # (file_path, sql_query, query_id, warehouse_id, etc.)
+                # (file_path, sql_query, query_id, warehouse_id, run_if, environment_key, job_cluster_key, existing_cluster_id, notification_settings, etc.)
                 task_config = {}
                 if "file_path" in task:
                     task_config["file_path"] = task["file_path"]
@@ -224,10 +224,34 @@ class MetadataManager:
                     task_config["warehouse_id"] = task["warehouse_id"]
                 if "timeout_seconds" in task:
                     task_config["timeout_seconds"] = task["timeout_seconds"]
+                if "run_if" in task:
+                    task_config["run_if"] = task["run_if"]
+                if "environment_key" in task:
+                    task_config["environment_key"] = task["environment_key"]
+                if "job_cluster_key" in task:
+                    task_config["job_cluster_key"] = task["job_cluster_key"]
+                if "existing_cluster_id" in task:
+                    task_config["existing_cluster_id"] = task["existing_cluster_id"]
+                if "notification_settings" in task:
+                    task_config["notification_settings"] = task["notification_settings"]
 
                 # Store job_config in first task's task_config
                 if first_task and job_config:
-                    task_config["_job_config"] = job_config
+                    # Store job-level settings: tags, job_clusters, environments, notification_settings
+                    stored_job_config = {}
+                    if "tags" in job_config:
+                        stored_job_config["tags"] = job_config["tags"]
+                    if "job_clusters" in job_config:
+                        stored_job_config["job_clusters"] = job_config["job_clusters"]
+                    if "environments" in job_config:
+                        stored_job_config["_job_environments"] = job_config["environments"]
+                    if "notification_settings" in job_config:
+                        stored_job_config["notification_settings"] = job_config["notification_settings"]
+                    # Store other job_config fields (timeout_seconds, max_concurrent_runs, queue, continuous, trigger, schedule)
+                    for key in ["timeout_seconds", "max_concurrent_runs", "queue", "continuous", "trigger", "schedule"]:
+                        if key in job_config:
+                            stored_job_config[key] = job_config[key]
+                    task_config["_job_config"] = stored_job_config
                     first_task = False
 
                 current_user = _get_current_user()

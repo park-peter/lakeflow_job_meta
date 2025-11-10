@@ -1,6 +1,6 @@
 # Test Suite
 
-Comprehensive test suite for Lakeflow Job Meta framework.
+Comprehensive test suite for Lakeflow Jobs Meta framework.
 
 ## Test Files
 

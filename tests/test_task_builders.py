@@ -8,9 +8,21 @@ from lakeflow_jobs_meta.task_builders import (
     create_notebook_task_config,
     create_sql_query_task_config,
     create_sql_file_task_config,
+    create_python_wheel_task_config,
+    create_spark_jar_task_config,
+    create_pipeline_task_config,
+    create_dbt_task_config,
     convert_task_config_to_sdk_task,
 )
-from lakeflow_jobs_meta.constants import TASK_TYPE_NOTEBOOK, TASK_TYPE_SQL_QUERY, TASK_TYPE_SQL_FILE
+from lakeflow_jobs_meta.constants import (
+    TASK_TYPE_NOTEBOOK,
+    TASK_TYPE_SQL_QUERY,
+    TASK_TYPE_SQL_FILE,
+    TASK_TYPE_PYTHON_WHEEL,
+    TASK_TYPE_SPARK_JAR,
+    TASK_TYPE_PIPELINE,
+    TASK_TYPE_DBT,
+)
 
 
 class TestCreateTaskFromConfig:
@@ -800,3 +812,222 @@ class TestTaskTypeIntegration:
         sql_file_sdk = convert_task_config_to_sdk_task(sql_file_config)
         assert sql_file_sdk.timeout_seconds == timeout
         assert sql_file_sdk.disabled is True
+
+
+class TestPythonWheelTaskType:
+    """Tests for Python wheel task type."""
+
+    def test_python_wheel_task_creation(self):
+        """Test creation of Python wheel task."""
+        task_data = {
+            "task_key": "python_wheel_task_1",
+            "task_type": "python_wheel",
+            "task_config": json.dumps({
+                "package_name": "my_package",
+                "entry_point": "main",
+                "parameters": ["arg1", "arg2"],
+            }),
+            "parameters": "{}",
+            "disabled": False,
+        }
+        control_table = "main.examples.etl_control"
+        task_config = create_task_from_config(task_data, control_table)
+
+        assert task_config["task_type"] == TASK_TYPE_PYTHON_WHEEL
+        assert "python_wheel_task" in task_config
+        assert task_config["python_wheel_task"]["package_name"] == "my_package"
+        assert task_config["python_wheel_task"]["entry_point"] == "main"
+        assert task_config["python_wheel_task"]["parameters"] == ["arg1", "arg2"]
+
+    def test_python_wheel_task_missing_package_name(self):
+        """Test Python wheel task with missing package_name."""
+        with pytest.raises(ValueError, match="Missing package_name"):
+            create_python_wheel_task_config(
+                "test_task",
+                {"entry_point": "main"},
+                {}
+            )
+
+    def test_python_wheel_task_missing_entry_point(self):
+        """Test Python wheel task with missing entry_point."""
+        with pytest.raises(ValueError, match="Missing entry_point"):
+            create_python_wheel_task_config(
+                "test_task",
+                {"package_name": "my_package"},
+                {}
+            )
+
+
+class TestSparkJarTaskType:
+    """Tests for Spark JAR task type."""
+
+    def test_spark_jar_task_creation(self):
+        """Test creation of Spark JAR task."""
+        task_data = {
+            "task_key": "spark_jar_task_1",
+            "task_type": "spark_jar",
+            "task_config": json.dumps({
+                "main_class_name": "com.example.MainClass",
+                "parameters": ["param1", "param2"],
+            }),
+            "parameters": "{}",
+            "disabled": False,
+        }
+        control_table = "main.examples.etl_control"
+        task_config = create_task_from_config(task_data, control_table)
+
+        assert task_config["task_type"] == TASK_TYPE_SPARK_JAR
+        assert "spark_jar_task" in task_config
+        assert task_config["spark_jar_task"]["main_class_name"] == "com.example.MainClass"
+        assert task_config["spark_jar_task"]["parameters"] == ["param1", "param2"]
+
+    def test_spark_jar_task_missing_main_class_name(self):
+        """Test Spark JAR task with missing main_class_name."""
+        with pytest.raises(ValueError, match="Missing main_class_name"):
+            create_spark_jar_task_config(
+                "test_task",
+                {"parameters": []},
+                {}
+            )
+
+
+class TestPipelineTaskType:
+    """Tests for Pipeline task type."""
+
+    def test_pipeline_task_creation(self):
+        """Test creation of Pipeline task."""
+        task_data = {
+            "task_key": "pipeline_task_1",
+            "task_type": "pipeline",
+            "task_config": json.dumps({
+                "pipeline_id": "1165597e-f650-4bf3-9a4f-fc2f2d40d2c3",
+            }),
+            "parameters": "{}",
+            "disabled": False,
+        }
+        control_table = "main.examples.etl_control"
+        task_config = create_task_from_config(task_data, control_table)
+
+        assert task_config["task_type"] == TASK_TYPE_PIPELINE
+        assert "pipeline_task" in task_config
+        assert task_config["pipeline_task"]["pipeline_id"] == "1165597e-f650-4bf3-9a4f-fc2f2d40d2c3"
+
+    def test_pipeline_task_missing_pipeline_id(self):
+        """Test Pipeline task with missing pipeline_id."""
+        with pytest.raises(ValueError, match="Missing pipeline_id"):
+            create_pipeline_task_config(
+                "test_task",
+                {}
+            )
+
+
+class TestDbtTaskType:
+    """Tests for dbt task type."""
+
+    def test_dbt_task_creation(self):
+        """Test creation of dbt task."""
+        task_data = {
+            "task_key": "dbt_task_1",
+            "task_type": "dbt",
+            "task_config": json.dumps({
+                "commands": "dbt run --models my_model",
+                "warehouse_id": "abc123",
+                "profiles_directory": "/path/to/profiles",
+                "project_directory": "/path/to/project",
+                "catalog": "main",
+                "schema": "analytics",
+            }),
+            "parameters": "{}",
+            "disabled": False,
+        }
+        control_table = "main.examples.etl_control"
+        task_config = create_task_from_config(task_data, control_table, default_warehouse_id="default_warehouse")
+
+        assert task_config["task_type"] == TASK_TYPE_DBT
+        assert "dbt_task" in task_config
+        assert task_config["dbt_task"]["commands"] == "dbt run --models my_model"
+        assert task_config["dbt_task"]["warehouse_id"] == "abc123"
+
+    def test_dbt_task_missing_commands(self):
+        """Test dbt task with missing commands."""
+        with pytest.raises(ValueError, match="Missing commands"):
+            create_dbt_task_config(
+                "test_task",
+                {"warehouse_id": "abc123"},
+                "default_warehouse"
+            )
+
+    def test_dbt_task_missing_warehouse_id(self):
+        """Test dbt task with missing warehouse_id."""
+        with pytest.raises(ValueError, match="Missing warehouse_id"):
+            create_dbt_task_config(
+                "test_task",
+                {"commands": "dbt run"},
+                None
+            )
+
+
+class TestAdvancedTaskFeatures:
+    """Tests for advanced task features (run_if, job_cluster_key, existing_cluster_id, environment_key, notifications)."""
+
+    def test_task_with_run_if(self, sample_task_data):
+        """Test task with run_if condition."""
+        sample_task_data["task_config"] = json.dumps({
+            "file_path": "/Workspace/test/notebook",
+            "run_if": "AT_LEAST_ONE_SUCCESS",
+        })
+        control_table = "main.examples.etl_control"
+        task_config = create_task_from_config(sample_task_data, control_table)
+
+        assert task_config["run_if"] == "AT_LEAST_ONE_SUCCESS"
+
+    def test_task_with_job_cluster_key(self, sample_task_data):
+        """Test task with job_cluster_key."""
+        sample_task_data["task_config"] = json.dumps({
+            "file_path": "/Workspace/test/notebook",
+            "job_cluster_key": "Job_cluster",
+        })
+        control_table = "main.examples.etl_control"
+        task_config = create_task_from_config(sample_task_data, control_table)
+
+        assert task_config["job_cluster_key"] == "Job_cluster"
+
+    def test_task_with_existing_cluster_id(self, sample_task_data):
+        """Test task with existing_cluster_id."""
+        sample_task_data["task_config"] = json.dumps({
+            "file_path": "/Workspace/test/notebook",
+            "existing_cluster_id": "1106-160244-2ko4u9ke",
+        })
+        control_table = "main.examples.etl_control"
+        task_config = create_task_from_config(sample_task_data, control_table)
+
+        assert task_config["existing_cluster_id"] == "1106-160244-2ko4u9ke"
+
+    def test_task_with_environment_key(self, sample_task_data):
+        """Test task with environment_key."""
+        sample_task_data["task_config"] = json.dumps({
+            "file_path": "/Workspace/test/notebook",
+            "environment_key": "default_python",
+        })
+        control_table = "main.examples.etl_control"
+        task_config = create_task_from_config(sample_task_data, control_table)
+
+        assert task_config["environment_key"] == "default_python"
+
+    def test_task_with_notification_settings(self, sample_task_data):
+        """Test task with notification_settings."""
+        sample_task_data["task_config"] = json.dumps({
+            "file_path": "/Workspace/test/notebook",
+            "notification_settings": {
+                "email_notifications": {
+                    "on_failure": ["alerts@example.com"],
+                },
+                "alert_on_last_attempt": True,
+            },
+        })
+        control_table = "main.examples.etl_control"
+        task_config = create_task_from_config(sample_task_data, control_table)
+
+        assert "notification_settings" in task_config
+        assert task_config["notification_settings"]["email_notifications"]["on_failure"] == ["alerts@example.com"]
+        assert task_config["notification_settings"]["alert_on_last_attempt"] is True

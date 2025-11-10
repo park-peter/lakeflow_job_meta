@@ -1,12 +1,13 @@
 # Lakeflow Jobs Meta
 
-A metadata-driven framework for orchestrating Databricks Lakeflow Jobs. Package as a library and run as a single task in a Lakeflow Job to continuously monitor for metadata changes and automatically update jobs.
+A metadata-driven framework for orchestrating Databricks Lakeflow Jobs. Package as a library and run as a single task in a Lakeflow Jobs to continuously monitor for metadata changes and automatically update jobs.
 
 ## Features
 
 - ✅ **Dynamic Job Generation**: Automatically creates/updates Databricks jobs from metadata
 - ✅ **Continuous Monitoring**: Automatically detects metadata changes and updates jobs
-- ✅ **Multiple Task Types**: Support for Notebook, SQL Query, and SQL File tasks
+- ✅ **Multiple Task Types**: Support for Notebook, SQL Query, SQL File, Python Wheel, Spark JAR, Pipeline, and dbt tasks
+- ✅ **Advanced Task Features**: Support for run_if conditions, job clusters, environments, and notifications
 - ✅ **Delta Table as Source of Truth**: Manage metadata directly in Delta tables
 - ✅ **YAML Support**: YAML file ingestion for bulk updates
 - ✅ **Dependency Management**: Handles execution order and task dependencies
@@ -103,7 +104,7 @@ jobs = jm.create_or_update_jobs(
 )
 ```
 
-### Usage as a Lakeflow Job Task (Recommended)
+### Usage as a Lakeflow Jobs Task (Recommended)
 
 1. **Use the orchestrator example** from `examples/orchestrator_example.ipynb` to create/update jobs on-demand, OR create a continuous monitoring job as shown below
 
@@ -252,83 +253,6 @@ Tests are organized in the `tests/` directory:
 
 All tests use pytest with mocking for external dependencies (Databricks SDK, Spark, dbutils).
 
-## Supported Task Types
-
-### 1. Notebook Tasks
-
-Execute Databricks notebooks with parameters.
-
-```yaml
-tasks:
-  - task_key: "my_notebook_task"
-    task_type: "notebook"
-    depends_on: []  # List of task_key strings this task depends on
-    file_path: "/Workspace/path/to/notebook"
-    parameters:
-      catalog: "my_catalog"
-      schema: "my_schema"
-      source_table: "source_table"
-      target_table: "target_table"
-```
-
-**Parameters passed to notebook:**
-- `task_key`: Unique identifier for this task
-- `control_table`: Name of the control table containing metadata
-- All other parameters from the `parameters` field in YAML
-
-### 2. SQL Query Tasks
-
-Execute SQL queries. Queries can be inline SQL or reference saved queries by `query_id`.
-
-**Note:** `warehouse_id` is required for SQL tasks. It can be specified in `task_config.warehouse_id` or provided via `default_warehouse_id` when initializing the orchestrator.
-
-```yaml
-tasks:
-  - task_key: "my_sql_query_task"
-    task_type: "sql_query"
-    depends_on: []  # List of task_key strings this task depends on
-    warehouse_id: "your-warehouse-id"
-    sql_query: |
-      SELECT * FROM bronze.customers WHERE date > :start_date
-    parameters:
-      start_date: "{{job.start_time.iso_date}}"
-```
-
-Or use a saved query:
-
-```yaml
-tasks:
-  - task_key: "my_saved_query_task"
-    task_type: "sql_query"
-    depends_on: []  # List of task_key strings this task depends on
-    warehouse_id: "your-warehouse-id"
-    query_id: "abc123-def456-ghi789"
-    parameters:
-      threshold: "5.0"
-```
-
-### 3. SQL File Tasks
-
-Execute SQL from files in your workspace or Git repository.
-
-**Note:** `warehouse_id` is required for SQL tasks. It can be specified in `task_config.warehouse_id` or provided via `default_warehouse_id` when initializing the orchestrator.
-
-```yaml
-tasks:
-  - task_key: "my_sql_file_task"
-    task_type: "sql_file"
-    depends_on: []  # List of task_key strings this task depends on
-    warehouse_id: "your-warehouse-id"
-    file_path: "/Workspace/path/to/query.sql"
-    file_source: "WORKSPACE"  # Optional: WORKSPACE or GIT (default: WORKSPACE)
-    parameters:
-      catalog: "my_catalog"
-      schema: "my_schema"
-      max_hours: "24"
-```
-
-SQL files should use parameter syntax (`:parameter_name`) for values passed via `parameters`. Parameters can be static values or Databricks dynamic value references like `{{job.id}}`, `{{task.name}}`, `{{job.start_time.iso_date}}`, etc.
-
 ## Metadata Schema
 
 Each job in your YAML must have:
@@ -356,14 +280,24 @@ jobs:
       #   pause_status: UNPAUSED
     tasks:
       - task_key: "unique_id"        # Required: Unique task identifier
-        task_type: "sql_query"       # Required: Type of task (notebook, sql_query, sql_file)
+        task_type: "sql_query"       # Required: Type of task (see "Task Types and Parameters" section below)
         depends_on: []               # Optional: List of task_key strings this task depends on (default: [])
         disabled: false              # Optional: Whether task is disabled (default: false)
-        timeout_seconds: 3600        # Optional: Task-level timeout (default: 3600)
-        warehouse_id: "abc123"      # Required for SQL tasks: Warehouse ID
+        timeout_seconds: 3600         # Optional: Task-level timeout (default: 3600)
+        run_if: "ALL_SUCCESS"        # Optional: Run condition (see common parameters below)
+        job_cluster_key: "Job_cluster"  # Optional: Reference to job-level cluster definition
+        # OR existing_cluster_id: "1106-160244-2ko4u9ke"  # Optional: Reference to existing all-purpose cluster
+        environment_key: "default_python"  # Optional: Reference to job-level environment
+        warehouse_id: "abc123"       # Required for SQL/dbt tasks: Warehouse ID
         sql_query: "SELECT * FROM ..."  # For sql_query: Inline SQL query
         # OR query_id: "abc123"      # For sql_query: Use saved query ID
-        # OR file_path: "/path/to.sql"  # For sql_file or notebook: File path
+        notification_settings:       # Optional: Task-level notification settings
+          email_notifications:
+            on_start: []
+            on_success: []
+            on_failure: ["alerts@example.com"]
+            on_duration_warning_threshold_exceeded: []
+          alert_on_last_attempt: true
         parameters:                  # Optional: Task parameters
           catalog: "my_catalog"
           schema: "my_schema"
@@ -379,7 +313,7 @@ CREATE TABLE control_table (
     job_name STRING,              -- Job name (from job_name in YAML)
     task_key STRING,              -- Unique task identifier
     depends_on STRING,            -- JSON array of task_key strings this task depends on
-    task_type STRING,             -- Task type: notebook, sql_query, or sql_file
+    task_type STRING,             -- Task type: notebook, sql_query, sql_file, python_wheel, spark_jar, pipeline, or dbt
     parameters STRING,            -- JSON string with task parameters
     task_config STRING,           -- JSON string with task-specific config (file_path, warehouse_id, sql_query, etc.)
     disabled BOOLEAN DEFAULT false, -- Whether task is disabled
@@ -430,16 +364,178 @@ Job-level settings (`job_config`) control the behavior of the entire Databricks 
   - `quartz_cron_expression`: Cron expression (e.g., `"13 2 15 * * ?"`)
   - `timezone_id`: Timezone (e.g., `"UTC"`)
   - `pause_status`: `UNPAUSED` or `PAUSED`
+- `tags`: Job-level tags as key-value pairs (e.g., `{department: "engineering", project: "data_pipeline"}`)
+- `job_clusters`: List of job cluster definitions for shared cluster configurations
+  - Each cluster definition has:
+    - `job_cluster_key`: Key name for the cluster (e.g., `"Job_cluster"`)
+    - `new_cluster`: Full cluster specification (spark_version, node_type_id, num_workers, aws_attributes, custom_tags, etc.)
+- `environments`: List of environment definitions for Python/Scala dependencies
+  - Each environment has:
+    - `environment_key`: Key name for the environment
+    - `spec`: Environment specification (dependencies, java_dependencies, environment_version)
+- `notification_settings`: Job-level notification settings
+  - `email_notifications`: Email notification configuration
+    - `on_start`: List of email addresses to notify when job starts
+    - `on_success`: List of email addresses to notify on success
+    - `on_failure`: List of email addresses to notify on failure
+    - `on_duration_warning_threshold_exceeded`: List of email addresses for duration warnings
+  - `no_alert_for_skipped_runs`: Whether to skip alerts for skipped runs
+  - `no_alert_for_canceled_runs`: Whether to skip alerts for canceled runs
+  - `alert_on_last_attempt`: Whether to alert only on last retry attempt
 
-### Task-Level Settings
+## Task Types and Parameters
 
-Task-level settings at the task level:
+All task types support these common parameters:
 
-- `timeout_seconds`: Maximum time the task can run (default: 3600 seconds)
-- `disabled`: Whether the task is disabled (default: false)
-- `warehouse_id`: Required for SQL tasks (can be provided via `default_warehouse_id` in orchestrator)
-- `file_path`: Required for notebook and sql_file tasks
-- `sql_query` or `query_id`: Required for sql_query tasks
+- `task_key`: Required - Unique task identifier
+- `task_type`: Required - Type of task (see supported types below)
+- `depends_on`: Optional - List of task_key strings this task depends on (default: `[]`)
+- `disabled`: Optional - Whether task is disabled (default: `false`)
+- `timeout_seconds`: Optional - Maximum time the task can run (default: 3600 seconds)
+- `run_if`: Optional - Run condition for the task
+  - `ALL_SUCCESS`: Run only if all dependencies succeed
+  - `AT_LEAST_ONE_SUCCESS`: Run if at least one dependency succeeds
+  - `NONE_FAILED`: Run if no dependencies fail
+  - `ALL_DONE`: Run when all dependencies complete (regardless of status)
+  - `AT_LEAST_ONE_FAILED`: Run if at least one dependency fails
+  - `ALL_FAILED`: Run only if all dependencies fail
+- `job_cluster_key`: Optional - Reference to a job-level cluster definition (use with `job_clusters` in `job_config`)
+- `existing_cluster_id`: Optional - Reference to an existing all-purpose cluster in the workspace
+  - Note: Tasks can use either `job_cluster_key` OR `existing_cluster_id`, but not both
+- `environment_key`: Optional - Reference to a job-level environment definition
+- `notification_settings`: Optional - Task-level notification settings (same structure as job-level)
+
+#### 1. Notebook Tasks (`task_type: "notebook"`)
+
+**Required Parameters:**
+- `file_path`: Path to the notebook file (e.g., `/Workspace/Users/user@example.com/my_notebook`)
+
+**Optional Parameters:**
+- `parameters`: Dictionary of parameters passed to the notebook as `base_parameters`
+  - Automatically includes `task_key` and `control_table` parameters
+
+**Example:**
+```yaml
+- task_key: "ingest_data"
+  task_type: "notebook"
+  file_path: "/Workspace/Users/user@example.com/ingestion_notebook"
+  parameters:
+    catalog: "my_catalog"
+    schema: "my_schema"
+    source_table: "source_table"
+```
+
+#### 2. SQL Query Tasks (`task_type: "sql_query"`)
+
+**Required Parameters:**
+- `warehouse_id`: SQL warehouse ID (can be provided via `default_warehouse_id` in orchestrator)
+- Either `sql_query` OR `query_id`:
+  - `sql_query`: Inline SQL query string
+  - `query_id`: ID of a saved query in Databricks SQL
+
+**Optional Parameters:**
+- `parameters`: Dictionary of parameters for SQL parameter substitution (`:parameter_name`)
+
+**Example:**
+```yaml
+- task_key: "validate_data"
+  task_type: "sql_query"
+  warehouse_id: "abc123"
+  sql_query: "SELECT COUNT(*) as row_count FROM :catalog.:schema.customers"
+  parameters:
+    catalog: "my_catalog"
+    schema: "my_schema"
+```
+
+#### 3. SQL File Tasks (`task_type: "sql_file"`)
+
+**Required Parameters:**
+- `warehouse_id`: SQL warehouse ID (can be provided via `default_warehouse_id` in orchestrator)
+- `file_path`: Path to the SQL file (e.g., `/Workspace/Users/user@example.com/query.sql`)
+
+**Optional Parameters:**
+- `parameters`: Dictionary of parameters for SQL parameter substitution (`:parameter_name`)
+
+**Example:**
+```yaml
+- task_key: "transform_data"
+  task_type: "sql_file"
+  warehouse_id: "abc123"
+  file_path: "/Workspace/Users/user@example.com/transformations.sql"
+  parameters:
+    catalog: "my_catalog"
+    schema: "my_schema"
+```
+
+#### 4. Python Wheel Tasks (`task_type: "python_wheel"`)
+
+**Required Parameters:**
+- `package_name`: Name of the Python wheel package
+- `entry_point`: Entry point function name in the package
+
+**Optional Parameters:**
+- `parameters`: List of parameters to pass to the entry point function (can be a list or dict)
+
+**Example:**
+```yaml
+- task_key: "run_python_wheel"
+  task_type: "python_wheel"
+  package_name: "my_package"
+  entry_point: "main"
+  parameters: ["arg1", "arg2", "arg3"]
+```
+
+#### 5. Spark JAR Tasks (`task_type: "spark_jar"`)
+
+**Required Parameters:**
+- `main_class_name`: Fully qualified name of the main class (e.g., `com.example.MainClass`)
+
+**Optional Parameters:**
+- `parameters`: List of parameters to pass to the main class (can be a list or dict)
+
+**Example:**
+```yaml
+- task_key: "run_spark_jar"
+  task_type: "spark_jar"
+  main_class_name: "com.example.MainClass"
+  parameters: ["param1", "param2"]
+```
+
+#### 6. Pipeline Tasks (`task_type: "pipeline"`)
+
+**Required Parameters:**
+- `pipeline_id`: ID of the Lakeflow Declarative Pipeline to run
+
+**Example:**
+```yaml
+- task_key: "run_pipeline"
+  task_type: "pipeline"
+  pipeline_id: "1165597e-f650-4bf3-9a4f-fc2f2d40d2c3"
+```
+
+#### 7. dbt Tasks (`task_type: "dbt"`)
+
+**Required Parameters:**
+- `commands`: dbt command to execute (e.g., `"dbt run --models my_model"`)
+- `warehouse_id`: SQL warehouse ID (can be provided via `default_warehouse_id` in orchestrator, which is used as default if not specified)
+
+**Optional Parameters:**
+- `profiles_directory`: Path to dbt profiles directory
+- `project_directory`: Path to dbt project directory
+- `catalog`: Catalog name for dbt
+- `schema`: Schema name for dbt
+
+**Example:**
+```yaml
+- task_key: "run_dbt"
+  task_type: "dbt"
+  commands: "dbt run --models my_model"
+  warehouse_id: "abc123"
+  profiles_directory: "/Workspace/Users/user@example.com/dbt-profiles"
+  project_directory: "/Workspace/Users/user@example.com/dbt-project"
+  catalog: "main"
+  schema: "analytics"
+```
 
 ### Task Disabling
 
@@ -498,9 +594,6 @@ See `examples/metadata_examples.yaml` for comprehensive examples including:
 
 ## Future Enhancements
 
-- [ ] Python script and wheels tasks
-- [ ] Pipeline tasks (Lakeflow Declarative Pipelines)
-- [ ] dbt tasks
 - [ ] PowerBI refresh Tasks
 - [ ] Enhanced error handling and retry logic
 - [ ] Execution monitoring dashboard

@@ -1,4 +1,4 @@
-"""Setup configuration for Lakeflow Job Meta package"""
+"""Setup configuration for Lakeflow Jobs Meta package"""
 
 from setuptools import setup, find_packages
 
@@ -39,4 +39,3 @@ setup(
     },
     include_package_data=True,
 )
-

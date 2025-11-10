@@ -2,12 +2,31 @@
 
 import json
 import logging
-from typing import Dict, Any, Optional
-from databricks.sdk.service.jobs import Task, NotebookTask, SqlTask, SqlTaskQuery, SqlTaskFile, TaskDependency, Source
+from typing import Dict, Any, Optional, List
+from databricks.sdk.service.jobs import (
+    Task,
+    NotebookTask,
+    SqlTask,
+    SqlTaskQuery,
+    SqlTaskFile,
+    TaskDependency,
+    Source,
+    RunIf,
+    JobEmailNotifications,
+    TaskNotificationSettings,
+    PythonWheelTask,
+    SparkJarTask,
+    PipelineTask,
+    DbtTask,
+)
 from lakeflow_jobs_meta.constants import (
     TASK_TYPE_NOTEBOOK,
     TASK_TYPE_SQL_QUERY,
     TASK_TYPE_SQL_FILE,
+    TASK_TYPE_PYTHON_WHEEL,
+    TASK_TYPE_SPARK_JAR,
+    TASK_TYPE_PIPELINE,
+    TASK_TYPE_DBT,
     TASK_TIMEOUT_SECONDS,
 )
 from lakeflow_jobs_meta.utils import sanitize_task_key, validate_notebook_path
@@ -72,6 +91,14 @@ def create_task_from_config(
         task_config = create_sql_query_task_config(task_key, task_config_json, parameters_json, default_warehouse_id)
     elif task_type == TASK_TYPE_SQL_FILE:
         task_config = create_sql_file_task_config(task_key, task_config_json, parameters_json, default_warehouse_id)
+    elif task_type == TASK_TYPE_PYTHON_WHEEL:
+        task_config = create_python_wheel_task_config(task_key, task_config_json, parameters_json)
+    elif task_type == TASK_TYPE_SPARK_JAR:
+        task_config = create_spark_jar_task_config(task_key, task_config_json, parameters_json)
+    elif task_type == TASK_TYPE_PIPELINE:
+        task_config = create_pipeline_task_config(task_key, task_config_json)
+    elif task_type == TASK_TYPE_DBT:
+        task_config = create_dbt_task_config(task_key, task_config_json, default_warehouse_id)
     else:
         raise ValueError(f"Unsupported task_type '{task_type}' for task_key '{task_key}'")
 
@@ -81,6 +108,18 @@ def create_task_from_config(
     # Add task-level timeout_seconds if specified in task_config
     if "timeout_seconds" in task_config_json:
         task_config["timeout_seconds"] = task_config_json["timeout_seconds"]
+    
+    # Extract and add new task-level fields (optional, only set if specified)
+    if "run_if" in task_config_json:
+        task_config["run_if"] = task_config_json["run_if"]
+    if "environment_key" in task_config_json:
+        task_config["environment_key"] = task_config_json["environment_key"]
+    if "job_cluster_key" in task_config_json:
+        task_config["job_cluster_key"] = task_config_json["job_cluster_key"]
+    if "existing_cluster_id" in task_config_json:
+        task_config["existing_cluster_id"] = task_config_json["existing_cluster_id"]
+    if "notification_settings" in task_config_json:
+        task_config["notification_settings"] = task_config_json["notification_settings"]
     
     # Set disabled flag from task metadata (defaults to False if not specified)
     task_config["disabled"] = task_data.get("disabled", False)
@@ -257,6 +296,165 @@ def create_sql_file_task_config(
     }
 
 
+def create_python_wheel_task_config(
+    task_key: str, task_config: Dict[str, Any], parameters: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Create Python wheel task configuration.
+
+    Args:
+        task_key: Sanitized task key
+        task_config: Task configuration dictionary (contains package_name, entry_point, parameters list)
+        parameters: Task parameters dictionary (will be converted to list)
+
+    Returns:
+        Python wheel task configuration dictionary
+
+    Raises:
+        ValueError: If package_name or entry_point is missing
+    """
+    package_name = task_config.get("package_name")
+    if not package_name:
+        raise ValueError(f"Missing package_name for task_key: {task_key}")
+
+    entry_point = task_config.get("entry_point")
+    if not entry_point:
+        raise ValueError(f"Missing entry_point for task_key: {task_key}")
+
+    # Parameters for Python wheel tasks are typically a list
+    parameters_list = task_config.get("parameters", [])
+    if isinstance(parameters_list, dict):
+        parameters_list = list(parameters_list.values())
+    elif not isinstance(parameters_list, list):
+        parameters_list = []
+
+    return {
+        "task_key": task_key,
+        "task_type": TASK_TYPE_PYTHON_WHEEL,
+        "python_wheel_task": {
+            "package_name": package_name,
+            "entry_point": entry_point,
+            "parameters": parameters_list,
+        },
+    }
+
+
+def create_spark_jar_task_config(
+    task_key: str, task_config: Dict[str, Any], parameters: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Create Spark JAR task configuration.
+
+    Args:
+        task_key: Sanitized task key
+        task_config: Task configuration dictionary (contains main_class_name, parameters list)
+        parameters: Task parameters dictionary (will be converted to list)
+
+    Returns:
+        Spark JAR task configuration dictionary
+
+    Raises:
+        ValueError: If main_class_name is missing
+    """
+    main_class_name = task_config.get("main_class_name")
+    if not main_class_name:
+        raise ValueError(f"Missing main_class_name for task_key: {task_key}")
+
+    # Parameters for Spark JAR tasks are typically a list
+    parameters_list = task_config.get("parameters", [])
+    if isinstance(parameters_list, dict):
+        parameters_list = list(parameters_list.values())
+    elif not isinstance(parameters_list, list):
+        parameters_list = []
+
+    return {
+        "task_key": task_key,
+        "task_type": TASK_TYPE_SPARK_JAR,
+        "spark_jar_task": {
+            "main_class_name": main_class_name,
+            "parameters": parameters_list,
+        },
+    }
+
+
+def create_pipeline_task_config(
+    task_key: str, task_config: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Create Pipeline task configuration.
+
+    Args:
+        task_key: Sanitized task key
+        task_config: Task configuration dictionary (contains pipeline_id)
+
+    Returns:
+        Pipeline task configuration dictionary
+
+    Raises:
+        ValueError: If pipeline_id is missing
+    """
+    pipeline_id = task_config.get("pipeline_id")
+    if not pipeline_id:
+        raise ValueError(f"Missing pipeline_id for task_key: {task_key}")
+
+    return {
+        "task_key": task_key,
+        "task_type": TASK_TYPE_PIPELINE,
+        "pipeline_task": {
+            "pipeline_id": pipeline_id,
+        },
+    }
+
+
+def create_dbt_task_config(
+    task_key: str, task_config: Dict[str, Any], default_warehouse_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """Create dbt task configuration.
+
+    Args:
+        task_key: Sanitized task key
+        task_config: Task configuration dictionary (contains commands, warehouse_id, etc.)
+        default_warehouse_id: Optional default SQL warehouse ID to use if not specified in config
+
+    Returns:
+        dbt task configuration dictionary
+
+    Raises:
+        ValueError: If commands or warehouse_id is missing
+    """
+    commands = task_config.get("commands")
+    if not commands:
+        raise ValueError(f"Missing commands for task_key: {task_key}")
+
+    warehouse_id = default_warehouse_id
+    task_warehouse_id = task_config.get("warehouse_id")
+    if task_warehouse_id:
+        if isinstance(task_warehouse_id, str) and task_warehouse_id.lower() not in ("your-warehouse-id", "your_warehouse_id"):
+            warehouse_id = task_warehouse_id
+    if not warehouse_id:
+        raise ValueError(
+            f"Missing warehouse_id for task_key: {task_key}. "
+            f"Either specify warehouse_id in task_config or provide default_warehouse_id to orchestrator."
+        )
+
+    dbt_config = {
+        "commands": commands,
+        "warehouse_id": warehouse_id,
+    }
+
+    if "profiles_directory" in task_config:
+        dbt_config["profiles_directory"] = task_config["profiles_directory"]
+    if "project_directory" in task_config:
+        dbt_config["project_directory"] = task_config["project_directory"]
+    if "catalog" in task_config:
+        dbt_config["catalog"] = task_config["catalog"]
+    if "schema" in task_config:
+        dbt_config["schema"] = task_config["schema"]
+
+    return {
+        "task_key": task_key,
+        "task_type": TASK_TYPE_DBT,
+        "dbt_task": dbt_config,
+    }
+
+
 def convert_task_config_to_sdk_task(task_config: Dict[str, Any], cluster_id: Optional[str] = None) -> Task:
     """Convert task configuration dictionary to Databricks SDK Task object.
 
@@ -278,6 +476,41 @@ def convert_task_config_to_sdk_task(task_config: Dict[str, Any], cluster_id: Opt
     task_timeout = task_config.get("timeout_seconds", TASK_TIMEOUT_SECONDS)
     task_disabled = task_config.get("disabled", False)
 
+    # Extract new task-level fields
+    run_if_str = task_config.get("run_if")
+    run_if_enum = None
+    if run_if_str:
+        try:
+            run_if_enum = RunIf(run_if_str)
+        except (ValueError, TypeError):
+            logger.warning(f"Invalid run_if value '{run_if_str}' for task '{task_key}', ignoring")
+    
+    environment_key = task_config.get("environment_key")
+    job_cluster_key = task_config.get("job_cluster_key")
+    existing_cluster_id_from_config = task_config.get("existing_cluster_id")
+    # Use existing_cluster_id from config if provided, otherwise fall back to cluster_id parameter
+    final_existing_cluster_id = existing_cluster_id_from_config or cluster_id
+    
+    # Build notification_settings if provided
+    notification_settings_obj = None
+    if "notification_settings" in task_config:
+        notif_config = task_config["notification_settings"]
+        email_notifications_obj = None
+        if "email_notifications" in notif_config:
+            email_config = notif_config["email_notifications"]
+            email_notifications_obj = JobEmailNotifications(
+                on_start=email_config.get("on_start", []),
+                on_success=email_config.get("on_success", []),
+                on_failure=email_config.get("on_failure", []),
+                on_duration_warning_threshold_exceeded=email_config.get("on_duration_warning_threshold_exceeded", []),
+            )
+        notification_settings_obj = TaskNotificationSettings(
+            email_notifications=email_notifications_obj,
+            no_alert_for_skipped_runs=notif_config.get("no_alert_for_skipped_runs"),
+            no_alert_for_canceled_runs=notif_config.get("no_alert_for_canceled_runs"),
+            alert_on_last_attempt=notif_config.get("alert_on_last_attempt"),
+        )
+
     # Create Task object (disabled is handled in serialization, not in constructor)
     task_obj = None
     
@@ -290,8 +523,12 @@ def convert_task_config_to_sdk_task(task_config: Dict[str, Any], cluster_id: Opt
                 base_parameters=notebook_config.get("base_parameters", {}),
             ),
             depends_on=task_dependencies,
-            existing_cluster_id=cluster_id,
+            existing_cluster_id=final_existing_cluster_id,
+            job_cluster_key=job_cluster_key,
             timeout_seconds=task_timeout,
+            run_if=run_if_enum,
+            environment_key=environment_key,
+            notification_settings=notification_settings_obj,
         )
 
     elif task_type == TASK_TYPE_SQL_QUERY:
@@ -315,6 +552,11 @@ def convert_task_config_to_sdk_task(task_config: Dict[str, Any], cluster_id: Opt
             ),
             depends_on=task_dependencies,
             timeout_seconds=task_timeout,
+            run_if=run_if_enum,
+            environment_key=environment_key,
+            job_cluster_key=job_cluster_key,
+            existing_cluster_id=final_existing_cluster_id,
+            notification_settings=notification_settings_obj,
         )
 
     elif task_type == TASK_TYPE_SQL_FILE:
@@ -346,6 +588,83 @@ def convert_task_config_to_sdk_task(task_config: Dict[str, Any], cluster_id: Opt
             ),
             depends_on=task_dependencies,
             timeout_seconds=task_timeout,
+            run_if=run_if_enum,
+            environment_key=environment_key,
+            job_cluster_key=job_cluster_key,
+            existing_cluster_id=final_existing_cluster_id,
+            notification_settings=notification_settings_obj,
+        )
+
+    elif task_type == TASK_TYPE_PYTHON_WHEEL:
+        python_wheel_config = task_config["python_wheel_task"]
+        task_obj = Task(
+            task_key=task_key,
+            python_wheel_task=PythonWheelTask(
+                package_name=python_wheel_config["package_name"],
+                entry_point=python_wheel_config["entry_point"],
+                parameters=python_wheel_config.get("parameters", []),
+            ),
+            depends_on=task_dependencies,
+            timeout_seconds=task_timeout,
+            run_if=run_if_enum,
+            environment_key=environment_key,
+            job_cluster_key=job_cluster_key,
+            existing_cluster_id=final_existing_cluster_id,
+            notification_settings=notification_settings_obj,
+        )
+
+    elif task_type == TASK_TYPE_SPARK_JAR:
+        spark_jar_config = task_config["spark_jar_task"]
+        task_obj = Task(
+            task_key=task_key,
+            spark_jar_task=SparkJarTask(
+                main_class_name=spark_jar_config["main_class_name"],
+                parameters=spark_jar_config.get("parameters", []),
+            ),
+            depends_on=task_dependencies,
+            timeout_seconds=task_timeout,
+            run_if=run_if_enum,
+            environment_key=environment_key,
+            job_cluster_key=job_cluster_key,
+            existing_cluster_id=final_existing_cluster_id,
+            notification_settings=notification_settings_obj,
+        )
+
+    elif task_type == TASK_TYPE_PIPELINE:
+        pipeline_config = task_config["pipeline_task"]
+        task_obj = Task(
+            task_key=task_key,
+            pipeline_task=PipelineTask(
+                pipeline_id=pipeline_config["pipeline_id"],
+            ),
+            depends_on=task_dependencies,
+            timeout_seconds=task_timeout,
+            run_if=run_if_enum,
+            environment_key=environment_key,
+            job_cluster_key=job_cluster_key,
+            existing_cluster_id=final_existing_cluster_id,
+            notification_settings=notification_settings_obj,
+        )
+
+    elif task_type == TASK_TYPE_DBT:
+        dbt_config = task_config["dbt_task"]
+        task_obj = Task(
+            task_key=task_key,
+            dbt_task=DbtTask(
+                commands=dbt_config["commands"],
+                warehouse_id=dbt_config["warehouse_id"],
+                profiles_directory=dbt_config.get("profiles_directory"),
+                project_directory=dbt_config.get("project_directory"),
+                catalog=dbt_config.get("catalog"),
+                schema=dbt_config.get("schema"),
+            ),
+            depends_on=task_dependencies,
+            timeout_seconds=task_timeout,
+            run_if=run_if_enum,
+            environment_key=environment_key,
+            job_cluster_key=job_cluster_key,
+            existing_cluster_id=final_existing_cluster_id,
+            notification_settings=notification_settings_obj,
         )
 
     else:
@@ -380,11 +699,36 @@ def serialize_task_for_api(task: Task) -> Dict[str, Any]:
     if hasattr(task, "disabled") and task.disabled is not None:
         result["disabled"] = task.disabled
 
+    if task.run_if:
+        result["run_if"] = task.run_if.value if hasattr(task.run_if, "value") else str(task.run_if)
+
+    if task.environment_key:
+        result["environment_key"] = task.environment_key
+
     if task.existing_cluster_id:
         result["existing_cluster_id"] = task.existing_cluster_id
 
     if task.job_cluster_key:
         result["job_cluster_key"] = task.job_cluster_key
+
+    if task.notification_settings:
+        notif_dict: Dict[str, Any] = {}
+        if task.notification_settings.email_notifications:
+            email_notif = task.notification_settings.email_notifications
+            notif_dict["email_notifications"] = {
+                "on_start": email_notif.on_start or [],
+                "on_success": email_notif.on_success or [],
+                "on_failure": email_notif.on_failure or [],
+                "on_duration_warning_threshold_exceeded": email_notif.on_duration_warning_threshold_exceeded or [],
+            }
+        if task.notification_settings.no_alert_for_skipped_runs is not None:
+            notif_dict["no_alert_for_skipped_runs"] = task.notification_settings.no_alert_for_skipped_runs
+        if task.notification_settings.no_alert_for_canceled_runs is not None:
+            notif_dict["no_alert_for_canceled_runs"] = task.notification_settings.no_alert_for_canceled_runs
+        if task.notification_settings.alert_on_last_attempt is not None:
+            notif_dict["alert_on_last_attempt"] = task.notification_settings.alert_on_last_attempt
+        if notif_dict:
+            result["notification_settings"] = notif_dict
 
     if task.new_cluster:
         result["new_cluster"] = (
@@ -462,6 +806,45 @@ def serialize_task_for_api(task: Task) -> Dict[str, Any]:
         if hasattr(task.python_wheel_task, "as_dict"):
             result["python_wheel_task"] = task.python_wheel_task.as_dict()
         else:
-            result["python_wheel_task"] = task.python_wheel_task
+            result["python_wheel_task"] = {
+                "package_name": task.python_wheel_task.package_name,
+                "entry_point": task.python_wheel_task.entry_point,
+                "parameters": task.python_wheel_task.parameters or [],
+            }
+
+    if task.spark_jar_task:
+        if hasattr(task.spark_jar_task, "as_dict"):
+            result["spark_jar_task"] = task.spark_jar_task.as_dict()
+        else:
+            result["spark_jar_task"] = {
+                "main_class_name": task.spark_jar_task.main_class_name,
+                "parameters": task.spark_jar_task.parameters or [],
+            }
+
+    if task.pipeline_task:
+        if hasattr(task.pipeline_task, "as_dict"):
+            result["pipeline_task"] = task.pipeline_task.as_dict()
+        else:
+            result["pipeline_task"] = {
+                "pipeline_id": task.pipeline_task.pipeline_id,
+            }
+
+    if task.dbt_task:
+        if hasattr(task.dbt_task, "as_dict"):
+            result["dbt_task"] = task.dbt_task.as_dict()
+        else:
+            dbt_dict: Dict[str, Any] = {
+                "commands": task.dbt_task.commands,
+                "warehouse_id": task.dbt_task.warehouse_id,
+            }
+            if task.dbt_task.profiles_directory:
+                dbt_dict["profiles_directory"] = task.dbt_task.profiles_directory
+            if task.dbt_task.project_directory:
+                dbt_dict["project_directory"] = task.dbt_task.project_directory
+            if task.dbt_task.catalog:
+                dbt_dict["catalog"] = task.dbt_task.catalog
+            if task.dbt_task.schema:
+                dbt_dict["schema"] = task.dbt_task.schema
+            result["dbt_task"] = dbt_dict
 
     return result
