@@ -7,14 +7,13 @@ jobs:
   # Example 1: SQL Query Task with Job-Level and Task-Level Settings
   - job_name: "data_quality_checks"
     description: "Simple data quality validation using inline SQL query (no table dependencies)"
-    job_config:
-      timeout_seconds: 7200
-      max_concurrent_runs: 1
-      queue:
-        enabled: true
-      continuous:
-        pause_status: UNPAUSED
-        task_retry_mode: ON_FAILURE
+    timeout_seconds: 7200
+    max_concurrent_runs: 1
+    queue:
+      enabled: true
+    continuous:
+      pause_status: UNPAUSED
+      task_retry_mode: ON_FAILURE
     tasks:
       - task_key: "simple_quality_check"
         task_type: "sql_query"
@@ -107,40 +106,39 @@ jobs:
   # Example 6: Job with Tags, Job Clusters, and Task with run_if
   - job_name: "advanced_job_example"
     description: "Demonstrates tags, job clusters, run_if, and notifications"
-    job_config:
-      tags:
-        department: "engineering"
-        project: "data_pipeline"
-        environment: "production"
-      job_clusters:
-        - job_cluster_key: "Job_cluster"
-          new_cluster:
-            spark_version: "16.4.x-scala2.12"
-            node_type_id: "rd-fleet.xlarge"
-            num_workers: 8
-            aws_attributes:
-              first_on_demand: 1
-              availability: SPOT_WITH_FALLBACK
-              zone_id: us-west-2a
-              spot_bid_price_percent: 100
-              ebs_volume_count: 0
-            spark_env_vars:
-              PYSPARK_PYTHON: /databricks/python3/bin/python3
-            enable_elastic_disk: false
-            data_security_mode: SINGLE_USER
-            runtime_engine: PHOTON
-            custom_tags:
-              team: "data-engineering"
-              cost-center: "engineering"
-      notification_settings:
-        email_notifications:
-          on_start: ["team@example.com"]
-          on_success: ["team@example.com"]
-          on_failure: ["alerts@example.com", "team@example.com"]
-          on_duration_warning_threshold_exceeded: []
-        no_alert_for_skipped_runs: false
-        no_alert_for_canceled_runs: false
-        alert_on_last_attempt: true
+    tags:
+      department: "engineering"
+      project: "data_pipeline"
+      environment: "production"
+    job_clusters:
+      - job_cluster_key: "Job_cluster"
+        new_cluster:
+          spark_version: "16.4.x-scala2.12"
+          node_type_id: "rd-fleet.xlarge"
+          num_workers: 8
+          aws_attributes:
+            first_on_demand: 1
+            availability: SPOT_WITH_FALLBACK
+            zone_id: us-west-2a
+            spot_bid_price_percent: 100
+            ebs_volume_count: 0
+          spark_env_vars:
+            PYSPARK_PYTHON: /databricks/python3/bin/python3
+          enable_elastic_disk: false
+          data_security_mode: SINGLE_USER
+          runtime_engine: PHOTON
+          custom_tags:
+            team: "data-engineering"
+            cost-center: "engineering"
+    notification_settings:
+      email_notifications:
+        on_start: ["team@example.com"]
+        on_success: ["team@example.com"]
+        on_failure: ["alerts@example.com", "team@example.com"]
+        on_duration_warning_threshold_exceeded: []
+      no_alert_for_skipped_runs: false
+      no_alert_for_canceled_runs: false
+      alert_on_last_attempt: true
     tasks:
       - task_key: "task_with_existing_cluster"
         task_type: "notebook"
@@ -177,31 +175,35 @@ jobs:
   # Example 8: dbt Task
   - job_name: "dbt_job"
     description: "Run dbt transformations"
+    environments:
+      - environment_key: "default_dbt"
+        spec:
+          environment_version: "4"
+          dependencies:
+            - "dbt-databricks>=1.0.0<2.0.0"
     tasks:
       - task_key: "run_dbt"
         task_type: "dbt"
         commands: "dbt run --models my_model"
-        profiles_directory: "/Workspace/Users/peter.park@databricks.com/dbt-profiles"
-        project_directory: "/Workspace/Users/peter.park@databricks.com/dbt-project"
+        warehouse_id: "4b9b953939869799"
         catalog: "fe_ppark_demo"
         schema: "lakeflow_job_metadata"
 
   # Example 9: Job with Environments
   - job_name: "job_with_environments"
     description: "Job using Databricks environments"
-    job_config:
-      environments:
-        - environment_key: "default_python"
-          spec:
-            dependencies:
-              - "dbt-databricks>=1.0.0<2.0.0"
-              - "/Workspace/Users/sharky@databricks.com/artifacts/reef_process-1.0-py32-none-any.whl"
-            environment_version: "4"
-        - environment_key: "default_scala"
-          spec:
-            environment_version: "4-scala-preview"
-            java_dependencies:
-              - "/Volumes/catalog/schema/volume/path/to/file.jar"
+    environments:
+      - environment_key: "default_python"
+        spec:
+          dependencies:
+            - "dbt-databricks>=1.0.0<2.0.0"
+            - "/Workspace/Users/sharky@databricks.com/artifacts/reef_process-1.0-py32-none-any.whl"
+          environment_version: "4"
+      - environment_key: "default_scala"
+        spec:
+          environment_version: "4-scala-preview"
+          java_dependencies:
+            - "/Volumes/catalog/schema/volume/path/to/file.jar"
     tasks:
       - task_key: "python_task_with_env"
         task_type: "python_wheel"

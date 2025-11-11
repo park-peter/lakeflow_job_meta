@@ -11,7 +11,6 @@ from pyspark.sql.types import (
     StructType,
     StructField,
     StringType,
-    IntegerType,
     BooleanType,
 )
 
@@ -119,7 +118,7 @@ class MetadataManager:
                     task_key STRING,
                     depends_on STRING,
                     task_type STRING,
-                    parameters STRING,
+                    job_config STRING,
                     task_config STRING,
                     disabled BOOLEAN DEFAULT false,
                     created_by STRING,
@@ -169,13 +168,32 @@ class MetadataManager:
 
         for job in config["jobs"]:
             job_name = job["job_name"]
-            job_config = job.get("job_config", {})
-
-            # Store job_config in task_config of first task for later retrieval
-            first_task = True
             tasks = job.get("tasks", [])
             if not tasks:
                 raise ValueError(f"Job '{job_name}' must have at least one task")
+
+            job_level_keys = [
+                "tags",
+                "environments",
+                "parameters",
+                "timeout_seconds",
+                "max_concurrent_runs",
+                "queue",
+                "continuous",
+                "trigger",
+                "schedule",
+                "job_clusters",
+                "notification_settings",
+            ]
+            job_config_dict = {}
+            for key in job_level_keys:
+                if key in job:
+                    if key == "environments":
+                        job_config_dict["_job_environments"] = job[key]
+                    else:
+                        job_config_dict[key] = job[key]
+
+            job_config_json = json.dumps(job_config_dict) if job_config_dict else json.dumps({})
 
             yaml_job_tasks[job_name] = set()
             task_keys_in_job = set()
@@ -200,15 +218,17 @@ class MetadataManager:
                     depends_on = []
                 if not isinstance(depends_on, list):
                     raise ValueError(f"Task '{task_key}' depends_on must be a list of task_key strings")
-                
+
                 # Validate all dependencies exist
                 for dep_key in depends_on:
                     if not isinstance(dep_key, str):
                         raise ValueError(f"Task '{task_key}' depends_on must contain only task_key strings")
                     if dep_key not in task_keys_in_job:
-                        raise ValueError(f"Task '{task_key}' depends on '{dep_key}' which does not exist in job '{job_name}'")
+                        raise ValueError(
+                            f"Task '{task_key}' depends on '{dep_key}' which does not exist in job '{job_name}'"
+                        )
 
-                # Extract parameters
+                # Extract task-level parameters
                 parameters = task.get("parameters", {})
 
                 # Extract task-specific config
@@ -234,30 +254,33 @@ class MetadataManager:
                     task_config["existing_cluster_id"] = task["existing_cluster_id"]
                 if "notification_settings" in task:
                     task_config["notification_settings"] = task["notification_settings"]
-
-                # Store job_config in first task's task_config
-                if first_task and job_config:
-                    # Store job-level settings: tags, job_clusters, environments, notification_settings
-                    stored_job_config = {}
-                    if "tags" in job_config:
-                        stored_job_config["tags"] = job_config["tags"]
-                    if "job_clusters" in job_config:
-                        stored_job_config["job_clusters"] = job_config["job_clusters"]
-                    if "environments" in job_config:
-                        stored_job_config["_job_environments"] = job_config["environments"]
-                    if "notification_settings" in job_config:
-                        stored_job_config["notification_settings"] = job_config["notification_settings"]
-                    # Store other job_config fields (timeout_seconds, max_concurrent_runs, queue, continuous, trigger, schedule)
-                    for key in ["timeout_seconds", "max_concurrent_runs", "queue", "continuous", "trigger", "schedule"]:
-                        if key in job_config:
-                            stored_job_config[key] = job_config[key]
-                    task_config["_job_config"] = stored_job_config
-                    first_task = False
+                if "package_name" in task:
+                    task_config["package_name"] = task["package_name"]
+                if "entry_point" in task:
+                    task_config["entry_point"] = task["entry_point"]
+                if "main_class_name" in task:
+                    task_config["main_class_name"] = task["main_class_name"]
+                if "pipeline_id" in task:
+                    task_config["pipeline_id"] = task["pipeline_id"]
+                if "commands" in task:
+                    task_config["commands"] = task["commands"]
+                if "profiles_directory" in task and task["profiles_directory"]:
+                    task_config["profiles_directory"] = task["profiles_directory"]
+                if "project_directory" in task and task["project_directory"]:
+                    task_config["project_directory"] = task["project_directory"]
+                if "catalog" in task:
+                    task_config["catalog"] = task["catalog"]
+                if "schema" in task:
+                    task_config["schema"] = task["schema"]
+                if "parameters" in task:
+                    task_config["parameters"] = task["parameters"]
 
                 current_user = _get_current_user()
                 disabled = task.get("disabled", False)
 
                 yaml_job_tasks[job_name].add(task_key)
+
+                task_config_json = json.dumps(task_config)
 
                 rows.append(
                     {
@@ -265,8 +288,8 @@ class MetadataManager:
                         "task_key": task_key,
                         "depends_on": json.dumps(depends_on),
                         "task_type": task_type,
-                        "parameters": json.dumps(parameters),
-                        "task_config": json.dumps(task_config),
+                        "task_config": task_config_json,
+                        "job_config": job_config_json,
                         "disabled": disabled,
                         "created_by": current_user,
                         "updated_by": current_user,
@@ -287,7 +310,7 @@ class MetadataManager:
                 StructField("task_key", StringType(), True),
                 StructField("depends_on", StringType(), True),
                 StructField("task_type", StringType(), True),
-                StructField("parameters", StringType(), True),
+                StructField("job_config", StringType(), True),
                 StructField("task_config", StringType(), True),
                 StructField("disabled", BooleanType(), True),
                 StructField("created_by", StringType(), True),
@@ -309,20 +332,20 @@ class MetadataManager:
                 UPDATE SET
                     depends_on = source.depends_on,
                     task_type = source.task_type,
-                    parameters = source.parameters,
                     task_config = source.task_config,
+                    job_config = source.job_config,
                     disabled = source.disabled,
                     updated_by = source.updated_by,
                     updated_timestamp = current_timestamp()
             WHEN NOT MATCHED THEN
                 INSERT (
                     job_name, task_key, depends_on, task_type,
-                    parameters, task_config, disabled, created_by,
+                    task_config, job_config, disabled, created_by,
                     updated_by
                 )
                 VALUES (
                     source.job_name, source.task_key, source.depends_on,
-                    source.task_type, source.parameters, source.task_config,
+                    source.task_type, source.task_config, source.job_config,
                     source.disabled, source.created_by, source.updated_by
                 )
         """
@@ -639,11 +662,7 @@ class MetadataManager:
         """
         spark = _get_spark()
         try:
-            tasks = (
-                spark.table(self.control_table)
-                .filter(F.col("job_name") == job_name)
-                .collect()
-            )
+            tasks = spark.table(self.control_table).filter(F.col("job_name") == job_name).collect()
             return [row.asDict() if hasattr(row, "asDict") else dict(row) for row in tasks]
         except Exception as e:
             logger.error(

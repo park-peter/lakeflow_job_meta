@@ -73,17 +73,15 @@ def create_task_from_config(
     if not task_type:
         raise ValueError(f"Task '{task_key}' must have 'task_type' field")
 
-    # Parse task_config JSON
+    # Parse task_config JSON string
     try:
-        task_config_json = json.loads(task_data.get("task_config", "{}"))
+        task_config_str = task_data.get("task_config", "{}")
+        task_config_json = json.loads(task_config_str) if isinstance(task_config_str, str) else task_config_str
     except (json.JSONDecodeError, TypeError) as e:
         raise ValueError(f"Invalid task_config JSON for task_key '{task_key}': {str(e)}")
 
-    # Parse parameters JSON
-    try:
-        parameters_json = json.loads(task_data.get("parameters", "{}"))
-    except (json.JSONDecodeError, TypeError) as e:
-        raise ValueError(f"Invalid parameters JSON for task_key '{task_key}': {str(e)}")
+    # Extract parameters from task_config
+    parameters_json = task_config_json.get("parameters", {})
 
     if task_type == TASK_TYPE_NOTEBOOK:
         task_config = create_notebook_task_config(task_key, task_config_json, parameters_json, control_table)
@@ -98,17 +96,17 @@ def create_task_from_config(
     elif task_type == TASK_TYPE_PIPELINE:
         task_config = create_pipeline_task_config(task_key, task_config_json)
     elif task_type == TASK_TYPE_DBT:
-        task_config = create_dbt_task_config(task_key, task_config_json, default_warehouse_id)
+        task_config = create_dbt_task_config(task_key, task_config_json)
     else:
         raise ValueError(f"Unsupported task_type '{task_type}' for task_key '{task_key}'")
 
     if depends_on_task_keys:
         task_config["depends_on"] = [{"task_key": task_key} for task_key in depends_on_task_keys]
-    
+
     # Add task-level timeout_seconds if specified in task_config
     if "timeout_seconds" in task_config_json:
         task_config["timeout_seconds"] = task_config_json["timeout_seconds"]
-    
+
     # Extract and add new task-level fields (optional, only set if specified)
     if "run_if" in task_config_json:
         task_config["run_if"] = task_config_json["run_if"]
@@ -120,7 +118,7 @@ def create_task_from_config(
         task_config["existing_cluster_id"] = task_config_json["existing_cluster_id"]
     if "notification_settings" in task_config_json:
         task_config["notification_settings"] = task_config_json["notification_settings"]
-    
+
     # Set disabled flag from task metadata (defaults to False if not specified)
     task_config["disabled"] = task_data.get("disabled", False)
 
@@ -164,13 +162,13 @@ def create_notebook_task_config(
 
 def _build_sql_task_parameters(parameters: Dict[str, Any]) -> Dict[str, str]:
     """Build SQL task parameters from parameters dictionary.
-    
+
     Parameters can contain static values or Databricks dynamic value references.
     See: https://docs.databricks.com/aws/en/jobs/dynamic-value-references
-    
+
     Args:
         parameters: Parameters dictionary
-        
+
     Returns:
         Dictionary of parameter names to string values
     """
@@ -185,9 +183,9 @@ def create_sql_query_task_config(
     Note: warehouse_id is REQUIRED for SQL tasks per Databricks Jobs API.
     If not provided in task_config, will use default_warehouse_id if available.
 
-    SQL queries should use parameter syntax (:parameter_name). Parameters are defined in 
+    SQL queries should use parameter syntax (:parameter_name). Parameters are defined in
     parameters dictionary and can use Databricks dynamic value references.
-    
+
     See: https://docs.databricks.com/aws/en/jobs/dynamic-value-references
 
     Args:
@@ -216,9 +214,7 @@ def create_sql_query_task_config(
     query_id = task_config.get("query_id")
 
     if not sql_query and not query_id:
-        raise ValueError(
-            f"Must provide either sql_query or query_id for task_key: {task_key}"
-        )
+        raise ValueError(f"Must provide either sql_query or query_id for task_key: {task_key}")
 
     task_parameters = _build_sql_task_parameters(parameters)
 
@@ -244,10 +240,10 @@ def create_sql_file_task_config(
 ) -> Dict[str, Any]:
     """Create SQL file task configuration.
 
-    SQL file tasks reference SQL files directly. SQL files should use parameter syntax 
-    (:parameter_name). Parameters are defined in parameters dictionary and can use Databricks 
+    SQL file tasks reference SQL files directly. SQL files should use parameter syntax
+    (:parameter_name). Parameters are defined in parameters dictionary and can use Databricks
     dynamic value references.
-    
+
     See: https://docs.databricks.com/aws/en/jobs/dynamic-value-references
 
     Note: warehouse_id is REQUIRED for SQL tasks per Databricks Jobs API.
@@ -375,9 +371,7 @@ def create_spark_jar_task_config(
     }
 
 
-def create_pipeline_task_config(
-    task_key: str, task_config: Dict[str, Any]
-) -> Dict[str, Any]:
+def create_pipeline_task_config(task_key: str, task_config: Dict[str, Any]) -> Dict[str, Any]:
     """Create Pipeline task configuration.
 
     Args:
@@ -411,38 +405,70 @@ def create_dbt_task_config(
     Args:
         task_key: Sanitized task key
         task_config: Task configuration dictionary (contains commands, warehouse_id, etc.)
-        default_warehouse_id: Optional default SQL warehouse ID to use if not specified in config
+        default_warehouse_id: Not used for dbt tasks (warehouse_id is optional)
 
     Returns:
         dbt task configuration dictionary
 
     Raises:
-        ValueError: If commands or warehouse_id is missing
+        ValueError: If commands is missing
     """
     commands = task_config.get("commands")
     if not commands:
         raise ValueError(f"Missing commands for task_key: {task_key}")
 
-    warehouse_id = default_warehouse_id
+    if isinstance(commands, str):
+        commands = commands.strip()
+        if not commands.startswith(("dbt", "edr")):
+            raise ValueError(f"Invalid dbt command, all dbt commands must start with `dbt` or `edr`. Got: {commands}")
+    elif isinstance(commands, list):
+        for cmd in commands:
+            if isinstance(cmd, str):
+                cmd = cmd.strip()
+                if not cmd.startswith(("dbt", "edr")):
+                    raise ValueError(
+                        f"Invalid dbt command, all dbt commands must start with `dbt` or `edr`. Got: {cmd}"
+                    )
+
+    warehouse_id = None
     task_warehouse_id = task_config.get("warehouse_id")
     if task_warehouse_id:
-        if isinstance(task_warehouse_id, str) and task_warehouse_id.lower() not in ("your-warehouse-id", "your_warehouse_id"):
+        if isinstance(task_warehouse_id, str) and task_warehouse_id.lower() not in (
+            "your-warehouse-id",
+            "your_warehouse_id",
+        ):
             warehouse_id = task_warehouse_id
-    if not warehouse_id:
-        raise ValueError(
-            f"Missing warehouse_id for task_key: {task_key}. "
-            f"Either specify warehouse_id in task_config or provide default_warehouse_id to orchestrator."
-        )
+
+    if isinstance(commands, str):
+        commands_list = [commands]
+    else:
+        commands_list = commands
 
     dbt_config = {
-        "commands": commands,
-        "warehouse_id": warehouse_id,
+        "commands": commands_list,
     }
 
-    if "profiles_directory" in task_config:
-        dbt_config["profiles_directory"] = task_config["profiles_directory"]
-    if "project_directory" in task_config:
-        dbt_config["project_directory"] = task_config["project_directory"]
+    if warehouse_id:
+        dbt_config["warehouse_id"] = warehouse_id
+
+    profiles_dir = task_config.get("profiles_directory")
+    logger.debug(
+        "DEBUG: profiles_directory for task_key '%s': %s (type: %s)", task_key, profiles_dir, type(profiles_dir)
+    )
+    if profiles_dir:
+        if warehouse_id:
+            logger.warning(
+                f"profiles_directory specified for task_key '{task_key}' but warehouse_id is also provided. "
+                f"warehouse_id takes precedence and profiles_directory will be ignored."
+            )
+        dbt_config["profiles_directory"] = profiles_dir
+        logger.debug("DEBUG: Added profiles_directory to dbt_config: %s", profiles_dir)
+    project_dir = task_config.get("project_directory")
+    logger.debug("DEBUG: project_directory for task_key '%s': %s (type: %s)", task_key, project_dir, type(project_dir))
+    if project_dir:
+        dbt_config["project_directory"] = project_dir
+        logger.debug("DEBUG: Added project_directory to dbt_config: %s", project_dir)
+    logger.debug("DEBUG: Final dbt_config for task_key '%s': %s", task_key, dbt_config)
     if "catalog" in task_config:
         dbt_config["catalog"] = task_config["catalog"]
     if "schema" in task_config:
@@ -471,7 +497,7 @@ def convert_task_config_to_sdk_task(task_config: Dict[str, Any], cluster_id: Opt
     task_dependencies = None
     if "depends_on" in task_config:
         task_dependencies = [TaskDependency(task_key=dep["task_key"]) for dep in task_config["depends_on"]]
-    
+
     # Get task-level timeout_seconds if specified, otherwise use default
     task_timeout = task_config.get("timeout_seconds", TASK_TIMEOUT_SECONDS)
     task_disabled = task_config.get("disabled", False)
@@ -484,13 +510,13 @@ def convert_task_config_to_sdk_task(task_config: Dict[str, Any], cluster_id: Opt
             run_if_enum = RunIf(run_if_str)
         except (ValueError, TypeError):
             logger.warning(f"Invalid run_if value '{run_if_str}' for task '{task_key}', ignoring")
-    
+
     environment_key = task_config.get("environment_key")
     job_cluster_key = task_config.get("job_cluster_key")
     existing_cluster_id_from_config = task_config.get("existing_cluster_id")
     # Use existing_cluster_id from config if provided, otherwise fall back to cluster_id parameter
     final_existing_cluster_id = existing_cluster_id_from_config or cluster_id
-    
+
     # Build notification_settings if provided
     notification_settings_obj = None
     if "notification_settings" in task_config:
@@ -505,15 +531,16 @@ def convert_task_config_to_sdk_task(task_config: Dict[str, Any], cluster_id: Opt
                 on_duration_warning_threshold_exceeded=email_config.get("on_duration_warning_threshold_exceeded", []),
             )
         notification_settings_obj = TaskNotificationSettings(
-            email_notifications=email_notifications_obj,
             no_alert_for_skipped_runs=notif_config.get("no_alert_for_skipped_runs"),
             no_alert_for_canceled_runs=notif_config.get("no_alert_for_canceled_runs"),
             alert_on_last_attempt=notif_config.get("alert_on_last_attempt"),
         )
+        if email_notifications_obj:
+            notification_settings_obj.email_notifications = email_notifications_obj
 
     # Create Task object (disabled is handled in serialization, not in constructor)
     task_obj = None
-    
+
     if task_type == TASK_TYPE_NOTEBOOK:
         notebook_config = task_config["notebook_task"]
         task_obj = Task(
@@ -576,7 +603,7 @@ def convert_task_config_to_sdk_task(task_config: Dict[str, Any], cluster_id: Opt
             source_enum = Source(file_source) if isinstance(file_source, str) else file_source
         except (ValueError, TypeError):
             source_enum = Source.WORKSPACE
-        
+
         sql_file = SqlTaskFile(path=file_path, source=source_enum)
 
         task_obj = Task(
@@ -648,16 +675,37 @@ def convert_task_config_to_sdk_task(task_config: Dict[str, Any], cluster_id: Opt
 
     elif task_type == TASK_TYPE_DBT:
         dbt_config = task_config["dbt_task"]
+        logger.debug("DEBUG: Creating DbtTask for task_key '%s', dbt_config: %s", task_key, dbt_config)
+        dbt_task_kwargs = {
+            "commands": dbt_config["commands"],
+        }
+        warehouse_id_val = dbt_config.get("warehouse_id")
+        logger.debug("DEBUG: warehouse_id from dbt_config: %s (type: %s)", warehouse_id_val, type(warehouse_id_val))
+        if warehouse_id_val:
+            dbt_task_kwargs["warehouse_id"] = warehouse_id_val
+        profiles_dir_val = dbt_config.get("profiles_directory")
+        logger.debug(
+            "DEBUG: profiles_directory from dbt_config: %s (type: %s)", profiles_dir_val, type(profiles_dir_val)
+        )
+        if profiles_dir_val:
+            dbt_task_kwargs["profiles_directory"] = profiles_dir_val
+        project_dir_val = dbt_config.get("project_directory")
+        logger.debug("DEBUG: project_directory from dbt_config: %s (type: %s)", project_dir_val, type(project_dir_val))
+        if project_dir_val:
+            dbt_task_kwargs["project_directory"] = project_dir_val
+            logger.debug("DEBUG: Added project_directory to dbt_task_kwargs: %s", project_dir_val)
+        catalog_val = dbt_config.get("catalog")
+        logger.debug("DEBUG: catalog from dbt_config: %s (type: %s)", catalog_val, type(catalog_val))
+        if catalog_val:
+            dbt_task_kwargs["catalog"] = catalog_val
+        schema_val = dbt_config.get("schema")
+        logger.debug("DEBUG: schema from dbt_config: %s (type: %s)", schema_val, type(schema_val))
+        if schema_val:
+            dbt_task_kwargs["schema"] = schema_val
+        logger.debug("DEBUG: Final dbt_task_kwargs for task_key '%s': %s", task_key, dbt_task_kwargs)
         task_obj = Task(
             task_key=task_key,
-            dbt_task=DbtTask(
-                commands=dbt_config["commands"],
-                warehouse_id=dbt_config["warehouse_id"],
-                profiles_directory=dbt_config.get("profiles_directory"),
-                project_directory=dbt_config.get("project_directory"),
-                catalog=dbt_config.get("catalog"),
-                schema=dbt_config.get("schema"),
-            ),
+            dbt_task=DbtTask(**dbt_task_kwargs),
             depends_on=task_dependencies,
             timeout_seconds=task_timeout,
             run_if=run_if_enum,
@@ -666,14 +714,19 @@ def convert_task_config_to_sdk_task(task_config: Dict[str, Any], cluster_id: Opt
             existing_cluster_id=final_existing_cluster_id,
             notification_settings=notification_settings_obj,
         )
+        logger.debug(
+            "DEBUG: Created Task object for task_key '%s', dbt_task.project_directory: %s",
+            task_key,
+            task_obj.dbt_task.project_directory if task_obj.dbt_task else None,
+        )
 
     else:
         raise ValueError(f"Unsupported task_type '{task_type}' for task_key '{task_key}'")
-    
+
     # Set disabled attribute after creation (SDK Task doesn't accept it in constructor)
     if task_disabled:
         task_obj.disabled = True
-    
+
     return task_obj
 
 
@@ -695,7 +748,7 @@ def serialize_task_for_api(task: Task) -> Dict[str, Any]:
 
     if task.timeout_seconds:
         result["timeout_seconds"] = task.timeout_seconds
-    
+
     if hasattr(task, "disabled") and task.disabled is not None:
         result["disabled"] = task.disabled
 
@@ -835,8 +888,9 @@ def serialize_task_for_api(task: Task) -> Dict[str, Any]:
         else:
             dbt_dict: Dict[str, Any] = {
                 "commands": task.dbt_task.commands,
-                "warehouse_id": task.dbt_task.warehouse_id,
             }
+            if task.dbt_task.warehouse_id:
+                dbt_dict["warehouse_id"] = task.dbt_task.warehouse_id
             if task.dbt_task.profiles_directory:
                 dbt_dict["profiles_directory"] = task.dbt_task.profiles_directory
             if task.dbt_task.project_directory:

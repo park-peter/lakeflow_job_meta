@@ -20,13 +20,25 @@ from databricks.sdk.service.jobs import (
 )
 
 try:
-    from databricks.sdk.service.compute import ClusterSpec
+    from databricks.sdk.service.compute import (
+        ClusterSpec,
+        Environment as ComputeEnvironment,
+        AwsAttributes,
+        AwsAvailability,
+        DataSecurityMode,
+        RuntimeEngine,
+    )
 except ImportError:
     ClusterSpec = None
+    ComputeEnvironment = None
+    AwsAttributes = None
+    AwsAvailability = None
+    DataSecurityMode = None
+    RuntimeEngine = None
 try:
-    from databricks.sdk.service.jobs import Environment
+    from databricks.sdk.service.jobs import JobEnvironment
 except ImportError:
-    Environment = None
+    JobEnvironment = None
 
 try:
     from databricks.sdk.service.jobs import TaskRetryMode
@@ -57,7 +69,18 @@ class JobSettingsWithDictTasks(JobSettings):
         if self.name:
             result["name"] = self.name
         if self.tasks:
-            result["tasks"] = [task if isinstance(task, dict) else task.as_dict() for task in self.tasks]
+            result["tasks"] = []
+            for task in self.tasks:
+                if isinstance(task, dict):
+                    result["tasks"].append(task)
+                elif hasattr(task, "as_dict"):
+                    try:
+                        result["tasks"].append(task.as_dict())
+                    except (AttributeError, TypeError) as e:
+                        logger.debug("DEBUG: Task.as_dict() failed: %s, using serialize_task_for_api", str(e))
+                        result["tasks"].append(serialize_task_for_api(task))
+                else:
+                    result["tasks"].append(task)
         if self.max_concurrent_runs is not None:
             result["max_concurrent_runs"] = self.max_concurrent_runs
         if self.timeout_seconds is not None:
@@ -104,35 +127,66 @@ class JobSettingsWithDictTasks(JobSettings):
                 result["schedule"] = self.schedule
         if hasattr(self, "tags") and self.tags is not None:
             result["tags"] = self.tags
+        if hasattr(self, "parameters") and self.parameters is not None:
+            result["parameters"] = self.parameters
         if hasattr(self, "job_clusters") and self.job_clusters is not None:
-            result["job_clusters"] = [
-                (
-                    cluster.as_dict()
-                    if hasattr(cluster, "as_dict")
-                    else (
-                        cluster
-                        if isinstance(cluster, dict)
-                        else {
-                            "job_cluster_key": cluster.job_cluster_key,
-                            "new_cluster": (
-                                cluster.new_cluster.as_dict()
-                                if hasattr(cluster.new_cluster, "as_dict")
-                                else (
-                                    cluster.new_cluster
-                                    if isinstance(cluster.new_cluster, dict)
-                                    else cluster.new_cluster
-                                )
-                            ),
-                        }
-                    )
-                )
-                for cluster in self.job_clusters
-            ]
+            logger.debug("DEBUG: Serializing job_clusters in JobSettingsWithDictTasks.as_dict()")
+            result["job_clusters"] = []
+            for idx, cluster in enumerate(self.job_clusters):
+                logger.debug("DEBUG: Processing job_cluster[%d], type: %s", idx, type(cluster))
+                if isinstance(cluster, dict):
+                    logger.debug("DEBUG: job_cluster[%d] is dict, appending as-is", idx)
+                    result["job_clusters"].append(cluster)
+                elif hasattr(cluster, "job_cluster_key"):
+                    logger.debug("DEBUG: job_cluster[%d] has job_cluster_key, extracting manually", idx)
+                    cluster_dict = {"job_cluster_key": cluster.job_cluster_key}
+                    if hasattr(cluster, "new_cluster") and cluster.new_cluster:
+                        if isinstance(cluster.new_cluster, dict):
+                            logger.debug("DEBUG: new_cluster is dict, using as-is")
+                            cluster_dict["new_cluster"] = cluster.new_cluster
+                        elif hasattr(cluster.new_cluster, "as_dict"):
+                            try:
+                                logger.debug("DEBUG: Attempting new_cluster.as_dict()")
+                                cluster_dict["new_cluster"] = cluster.new_cluster.as_dict()
+                            except (AttributeError, TypeError) as e:
+                                logger.debug("DEBUG: new_cluster.as_dict() failed: %s, using as-is", str(e))
+                                if isinstance(cluster.new_cluster, dict):
+                                    cluster_dict["new_cluster"] = cluster.new_cluster
+                                else:
+                                    cluster_dict["new_cluster"] = cluster.new_cluster
+                        else:
+                            cluster_dict["new_cluster"] = cluster.new_cluster
+                    result["job_clusters"].append(cluster_dict)
+                elif hasattr(cluster, "as_dict"):
+                    try:
+                        logger.debug("DEBUG: Attempting cluster.as_dict()")
+                        result["job_clusters"].append(cluster.as_dict())
+                    except (AttributeError, TypeError) as e:
+                        logger.debug("DEBUG: cluster.as_dict() failed: %s", str(e))
+                        if hasattr(cluster, "job_cluster_key"):
+                            cluster_dict = {"job_cluster_key": cluster.job_cluster_key}
+                            if hasattr(cluster, "new_cluster") and cluster.new_cluster:
+                                if isinstance(cluster.new_cluster, dict):
+                                    cluster_dict["new_cluster"] = cluster.new_cluster
+                                else:
+                                    cluster_dict["new_cluster"] = cluster.new_cluster
+                            result["job_clusters"].append(cluster_dict)
+                        else:
+                            result["job_clusters"].append(cluster)
+                else:
+                    result["job_clusters"].append(cluster)
         if hasattr(self, "environments") and self.environments is not None:
-            result["environments"] = [
-                (env.as_dict() if hasattr(env, "as_dict") else env if isinstance(env, dict) else env)
-                for env in self.environments
-            ]
+            result["environments"] = []
+            for env in self.environments:
+                if isinstance(env, dict):
+                    result["environments"].append(env)
+                elif hasattr(env, "as_dict"):
+                    try:
+                        result["environments"].append(env.as_dict())
+                    except AttributeError:
+                        result["environments"].append(env)
+                else:
+                    result["environments"].append(env)
         if hasattr(self, "notification_settings") and self.notification_settings is not None:
             if isinstance(self.notification_settings, dict):
                 result["notification_settings"] = self.notification_settings
@@ -267,6 +321,7 @@ class JobOrchestrator:
         jobs_table: Optional[str] = None,
         workspace_client: Optional[WorkspaceClient] = None,
         default_warehouse_id: Optional[str] = None,
+        default_queries_path: Optional[str] = None,
     ):
         """Initialize JobOrchestrator.
 
@@ -284,6 +339,9 @@ class JobOrchestrator:
                 warehouse_id in their task_config. If neither is provided,
                 task creation will fail. Useful when all SQL tasks in your
                 jobs use the same warehouse.
+            default_queries_path: Optional directory path where inline SQL queries
+                will be saved (e.g., "/Workspace/Shared/LakeflowQueriesMeta").
+                If not provided, queries are saved to the default workspace location.
         """
         # Set default control_table if not provided
         if control_table is None:
@@ -306,6 +364,7 @@ class JobOrchestrator:
         self.workspace_client = workspace_client or WorkspaceClient()
         self.metadata_manager = MetadataManager(control_table)
         self.default_warehouse_id = default_warehouse_id
+        self.default_queries_path = default_queries_path
 
     def _create_job_tracking_table(self) -> None:
         """Create Delta table to track job IDs for each module (internal)."""
@@ -427,10 +486,11 @@ class JobOrchestrator:
             "job_clusters": None,
             "environments": None,
             "notification_settings": None,
+            "parameters": None,
         }
 
         if first_task:
-            task_config_str = first_task.get("task_config", "{}")
+            job_config_str = first_task.get("job_config", "{}")
         else:
             spark = _get_spark()
             try:
@@ -438,7 +498,7 @@ class JobOrchestrator:
                 if not job_tasks:
                     return default_settings
                 task = _task_row_to_dict(job_tasks[0])
-                task_config_str = task.get("task_config", "{}")
+                job_config_str = task.get("job_config", "{}")
             except Exception as e:
                 logger.warning(
                     "Could not retrieve job settings for job '%s': %s. " "Using defaults.",
@@ -448,8 +508,7 @@ class JobOrchestrator:
                 return default_settings
 
         try:
-            task_config = json.loads(task_config_str) if isinstance(task_config_str, str) else task_config_str
-            job_config = task_config.get("_job_config", {})
+            job_config = json.loads(job_config_str) if isinstance(job_config_str, str) else job_config_str
             if job_config:
                 # Update standard settings
                 default_settings.update(
@@ -457,7 +516,15 @@ class JobOrchestrator:
                         k: v
                         for k, v in job_config.items()
                         if k
-                        in ["timeout_seconds", "max_concurrent_runs", "queue", "continuous", "trigger", "schedule"]
+                        in [
+                            "timeout_seconds",
+                            "max_concurrent_runs",
+                            "queue",
+                            "continuous",
+                            "trigger",
+                            "schedule",
+                            "parameters",
+                        ]
                     }
                 )
                 # Extract new job-level settings
@@ -660,24 +727,63 @@ class JobOrchestrator:
                     from databricks.sdk.service.sql import CreateQueryRequestQuery
 
                     query_name = f"LakeflowJobMeta_{job_name}_{sdk_task.task_key}"
-                    created_query = self.workspace_client.queries.create(
-                        query=CreateQueryRequestQuery(
-                            display_name=query_name,
-                            warehouse_id=warehouse_id,
-                            query_text=query_text,
+
+                    existing_query = None
+                    try:
+                        queries_list = self.workspace_client.queries.list()
+                        for q in queries_list:
+                            if q.display_name == query_name:
+                                existing_query = q
+                                break
+                    except Exception as e:
+                        logger.debug("Could not list queries to check for existing: %s", str(e))
+
+                    if existing_query:
+                        try:
+                            self.workspace_client.queries.update(
+                                id=existing_query.id,
+                                update_mask="query_text,warehouse_id",
+                                query=CreateQueryRequestQuery(
+                                    query_text=query_text,
+                                    warehouse_id=warehouse_id,
+                                ),
+                            )
+                            query_id = existing_query.id
+                            logger.debug("Updated existing query '%s' (ID: %s)", query_name, query_id)
+                        except Exception:
+                            logger.debug("Failed to update existing query, will create new: %s", str(e))
+                            existing_query = None
+
+                    if not existing_query:
+                        query_request_kwargs = {
+                            "display_name": query_name,
+                            "warehouse_id": warehouse_id,
+                            "query_text": query_text,
+                        }
+                        if self.default_queries_path:
+                            query_request_kwargs["parent_path"] = self.default_queries_path
+
+                        created_query = self.workspace_client.queries.create(
+                            query=CreateQueryRequestQuery(**query_request_kwargs)
                         )
-                    )
-                    query_id = created_query.id
-                    logger.debug("Created query '%s' (ID: %s)", query_name, query_id)
+                        query_id = created_query.id
+                        logger.debug(
+                            "Created query '%s' (ID: %s) at path: %s",
+                            query_name,
+                            query_id,
+                            self.default_queries_path or "default location",
+                        )
 
                     sdk_task.sql_task.query = SqlTaskQuery(query_id=query_id)
                 except Exception as e:
                     logger.error(
-                        "Failed to create query for task '%s': %s",
+                        "Failed to create/update query for task '%s': %s",
                         sdk_task.task_key,
                         str(e),
                     )
-                    raise RuntimeError(f"Failed to create query for task " f"'{sdk_task.task_key}': {str(e)}") from e
+                    raise RuntimeError(
+                        f"Failed to create/update query for task " f"'{sdk_task.task_key}': {str(e)}"
+                    ) from e
 
             sdk_task_objects.append(sdk_task)
             task_dict = serialize_task_for_api(sdk_task)
@@ -722,31 +828,38 @@ class JobOrchestrator:
                             if ClusterSpec and new_cluster_dict:
                                 try:
                                     new_cluster_obj = ClusterSpec(**new_cluster_dict)
+                                    job_clusters_list.append(
+                                        JobCluster(
+                                            job_cluster_key=cluster_dict["job_cluster_key"],
+                                            new_cluster=new_cluster_obj,
+                                        )
+                                    )
                                 except Exception:
-                                    new_cluster_obj = new_cluster_dict
-                            else:
-                                new_cluster_obj = new_cluster_dict
-                            job_clusters_list.append(
-                                JobCluster(
-                                    job_cluster_key=cluster_dict["job_cluster_key"],
-                                    new_cluster=new_cluster_obj,
-                                )
-                            )
-                        else:
+                                    pass
+                        elif hasattr(cluster_dict, "job_cluster_key"):
                             job_clusters_list.append(cluster_dict)
-                    job_settings.job_clusters = job_clusters_list
+                    if job_clusters_list:
+                        job_settings.job_clusters = job_clusters_list
                 environments_config = job_settings_config.get("environments")
                 if environments_config and isinstance(environments_config, list):
                     environments_list = []
                     for env_dict in environments_config:
-                        if isinstance(env_dict, dict) and Environment:
-                            try:
-                                environments_list.append(Environment(**env_dict))
-                            except Exception:
-                                environments_list.append(env_dict)
+                        if isinstance(env_dict, dict):
+                            if JobEnvironment and ComputeEnvironment:
+                                try:
+                                    spec_dict = env_dict.get("spec", {})
+                                    if spec_dict:
+                                        spec = ComputeEnvironment(**spec_dict)
+                                        env = JobEnvironment(environment_key=env_dict["environment_key"], spec=spec)
+                                        environments_list.append(env)
+                                except Exception:
+                                    pass
+                        elif hasattr(env_dict, "as_dict"):
+                            environments_list.append(env_dict)
                         else:
                             environments_list.append(env_dict)
-                    job_settings.environments = environments_list
+                    if environments_list:
+                        job_settings.environments = environments_list
                 notif_config = job_settings_config.get("notification_settings")
                 if notif_config and isinstance(notif_config, dict):
                     email_notif_obj = None
@@ -762,11 +875,15 @@ class JobOrchestrator:
                                 ),
                             )
                     job_settings.notification_settings = TaskNotificationSettings(
-                        email_notifications=email_notif_obj,
                         no_alert_for_skipped_runs=notif_config.get("no_alert_for_skipped_runs"),
                         no_alert_for_canceled_runs=notif_config.get("no_alert_for_canceled_runs"),
                         alert_on_last_attempt=notif_config.get("alert_on_last_attempt"),
                     )
+                    if email_notif_obj:
+                        job_settings.notification_settings.email_notifications = email_notif_obj
+
+                if job_settings_config.get("parameters"):
+                    job_settings.parameters = job_settings_config["parameters"]
 
                 self.workspace_client.jobs.update(
                     job_id=stored_job_id,
@@ -839,38 +956,69 @@ class JobOrchestrator:
                 job_settings_kwargs["tags"] = job_settings_config["tags"]
             job_clusters_config = job_settings_config.get("job_clusters")
             if job_clusters_config and isinstance(job_clusters_config, list):
+                logger.debug("DEBUG: Processing job_clusters for job '%s': %s", job_name, job_clusters_config)
                 job_clusters_list = []
-                for cluster_dict in job_clusters_config:
+                for idx, cluster_dict in enumerate(job_clusters_config):
+                    logger.debug("DEBUG: Processing job_cluster[%d]: %s", idx, cluster_dict)
                     if isinstance(cluster_dict, dict):
                         new_cluster_dict = cluster_dict.get("new_cluster", {})
+                        logger.debug("DEBUG: new_cluster_dict: %s", new_cluster_dict)
+                        new_cluster_obj = None
                         if ClusterSpec and new_cluster_dict:
                             try:
+                                logger.debug("DEBUG: Attempting to create ClusterSpec object")
                                 new_cluster_obj = ClusterSpec(**new_cluster_dict)
-                            except Exception:
-                                new_cluster_obj = new_cluster_dict
-                        else:
-                            new_cluster_obj = new_cluster_dict
-                        job_clusters_list.append(
-                            JobCluster(
-                                job_cluster_key=cluster_dict["job_cluster_key"],
-                                new_cluster=new_cluster_obj,
+                                logger.debug("DEBUG: ClusterSpec created, testing as_dict()")
+                                new_cluster_obj.as_dict()
+                                logger.debug("DEBUG: ClusterSpec.as_dict() succeeded")
+                            except (AttributeError, Exception) as e:
+                                logger.debug("DEBUG: ClusterSpec.as_dict() failed: %s", str(e))
+                                new_cluster_obj = None
+                        if new_cluster_obj is not None:
+                            logger.debug("DEBUG: Using JobCluster object with ClusterSpec")
+                            job_clusters_list.append(
+                                JobCluster(
+                                    job_cluster_key=cluster_dict["job_cluster_key"],
+                                    new_cluster=new_cluster_obj,
+                                )
                             )
-                        )
-                    else:
+                        elif new_cluster_dict:
+                            logger.debug("DEBUG: Using dict for job_cluster (ClusterSpec failed)")
+                            job_cluster_dict = {
+                                "job_cluster_key": cluster_dict["job_cluster_key"],
+                                "new_cluster": new_cluster_dict,
+                            }
+                            logger.debug("DEBUG: job_cluster_dict: %s", job_cluster_dict)
+                            job_clusters_list.append(job_cluster_dict)
+                    elif hasattr(cluster_dict, "job_cluster_key"):
+                        logger.debug("DEBUG: cluster_dict already has job_cluster_key, appending as-is")
                         job_clusters_list.append(cluster_dict)
-                job_settings_kwargs["job_clusters"] = job_clusters_list
+                if job_clusters_list:
+                    logger.debug("DEBUG: Final job_clusters_list: %s", job_clusters_list)
+                    logger.debug("DEBUG: Types in job_clusters_list: %s", [type(c) for c in job_clusters_list])
+                    job_settings_kwargs["job_clusters"] = job_clusters_list
             environments_config = job_settings_config.get("environments")
             if environments_config and isinstance(environments_config, list):
                 environments_list = []
                 for env_dict in environments_config:
-                    if isinstance(env_dict, dict) and Environment:
-                        try:
-                            environments_list.append(Environment(**env_dict))
-                        except Exception:
+                    if isinstance(env_dict, dict):
+                        if JobEnvironment and ComputeEnvironment:
+                            try:
+                                spec_dict = env_dict.get("spec", {})
+                                if spec_dict:
+                                    spec = ComputeEnvironment(**spec_dict)
+                                    env = JobEnvironment(environment_key=env_dict["environment_key"], spec=spec)
+                                    environments_list.append(env)
+                            except Exception:
+                                environments_list.append(env_dict)
+                        else:
                             environments_list.append(env_dict)
+                    elif hasattr(env_dict, "as_dict"):
+                        environments_list.append(env_dict)
                     else:
                         environments_list.append(env_dict)
-                job_settings_kwargs["environments"] = environments_list
+                if environments_list:
+                    job_settings_kwargs["environments"] = environments_list
             notif_config = job_settings_config.get("notification_settings")
             if notif_config and isinstance(notif_config, dict):
                 email_notif_obj = None
@@ -886,13 +1034,139 @@ class JobOrchestrator:
                             ),
                         )
                 job_settings_kwargs["notification_settings"] = TaskNotificationSettings(
-                    email_notifications=email_notif_obj,
                     no_alert_for_skipped_runs=notif_config.get("no_alert_for_skipped_runs"),
                     no_alert_for_canceled_runs=notif_config.get("no_alert_for_canceled_runs"),
                     alert_on_last_attempt=notif_config.get("alert_on_last_attempt"),
                 )
+                if email_notif_obj:
+                    job_settings_kwargs["notification_settings"].email_notifications = email_notif_obj
 
-            created_job = self.workspace_client.jobs.create(**job_settings_kwargs)
+            if job_settings_config.get("parameters"):
+                job_settings_kwargs["parameters"] = job_settings_config["parameters"]
+
+            logger.debug("DEBUG: Final job_settings_kwargs keys: %s", list(job_settings_kwargs.keys()))
+            if "job_clusters" in job_settings_kwargs:
+                logger.debug("DEBUG: job_clusters in kwargs: %s", job_settings_kwargs["job_clusters"])
+                logger.debug("DEBUG: job_clusters types: %s", [type(c) for c in job_settings_kwargs["job_clusters"]])
+
+            logger.debug("DEBUG: About to call jobs.create() for job '%s'", job_name)
+            logger.debug("DEBUG: Converting job_clusters dicts to JobCluster objects with ClusterSpec")
+            logger.debug("DEBUG: Monkey-patching ClusterSpec.as_dict() and JobCluster.as_dict()")
+
+            original_cluster_spec_as_dict = ClusterSpec.as_dict if ClusterSpec else None
+            original_job_cluster_as_dict = JobCluster.as_dict
+
+            def patched_cluster_spec_as_dict(self):
+                result = {}
+                for key in dir(self):
+                    if key.startswith("_") or callable(getattr(self, key, None)):
+                        continue
+                    try:
+                        value = getattr(self, key, None)
+                        if value is None:
+                            continue
+                        if isinstance(value, dict):
+                            result[key] = value
+                        elif hasattr(value, "as_dict"):
+                            try:
+                                result[key] = value.as_dict()
+                            except (AttributeError, TypeError) as e:
+                                logger.debug(
+                                    "DEBUG: Failed to call .as_dict() on %s.%s: %s", type(self).__name__, key, str(e)
+                                )
+                                result[key] = value
+                        elif hasattr(value, "value"):
+                            result[key] = value.value
+                        else:
+                            result[key] = value
+                    except Exception:
+                        continue
+                return result
+
+            def patched_job_cluster_as_dict(self):
+                result = {}
+                if self.job_cluster_key:
+                    result["job_cluster_key"] = self.job_cluster_key
+                if hasattr(self, "new_cluster") and self.new_cluster:
+                    if isinstance(self.new_cluster, dict):
+                        result["new_cluster"] = self.new_cluster
+                    elif hasattr(self.new_cluster, "as_dict"):
+                        try:
+                            result["new_cluster"] = self.new_cluster.as_dict()
+                        except (AttributeError, TypeError):
+                            result["new_cluster"] = self.new_cluster
+                    else:
+                        result["new_cluster"] = self.new_cluster
+                return result
+
+            if ClusterSpec:
+                ClusterSpec.as_dict = patched_cluster_spec_as_dict
+            JobCluster.as_dict = patched_job_cluster_as_dict
+
+            try:
+                if "job_clusters" in job_settings_kwargs:
+                    job_clusters_list = []
+                    for cluster_dict in job_settings_kwargs["job_clusters"]:
+                        logger.debug("DEBUG: Creating JobCluster from dict: %s", cluster_dict.get("job_cluster_key"))
+                        new_cluster_dict = cluster_dict.get("new_cluster", {})
+
+                        if ClusterSpec and new_cluster_dict:
+                            aws_attrs_dict = new_cluster_dict.pop("aws_attributes", None)
+                            aws_attrs_obj = None
+                            if AwsAttributes and aws_attrs_dict:
+                                try:
+                                    aws_attrs_dict_copy = aws_attrs_dict.copy()
+                                    if "availability" in aws_attrs_dict_copy and AwsAvailability:
+                                        availability_str = aws_attrs_dict_copy["availability"]
+                                        if isinstance(availability_str, str):
+                                            aws_attrs_dict_copy["availability"] = AwsAvailability(availability_str)
+                                    aws_attrs_obj = AwsAttributes(**aws_attrs_dict_copy)
+                                    logger.debug("DEBUG: Created AwsAttributes object with enum availability")
+                                except Exception as e:
+                                    logger.debug("DEBUG: Failed to create AwsAttributes: %s, keeping as dict", str(e))
+                                    new_cluster_dict["aws_attributes"] = aws_attrs_dict
+
+                            try:
+                                if aws_attrs_obj:
+                                    new_cluster_dict["aws_attributes"] = aws_attrs_obj
+
+                                if "data_security_mode" in new_cluster_dict and DataSecurityMode:
+                                    data_security_str = new_cluster_dict["data_security_mode"]
+                                    if isinstance(data_security_str, str):
+                                        new_cluster_dict["data_security_mode"] = DataSecurityMode(data_security_str)
+
+                                if "runtime_engine" in new_cluster_dict and RuntimeEngine:
+                                    runtime_str = new_cluster_dict["runtime_engine"]
+                                    if isinstance(runtime_str, str):
+                                        new_cluster_dict["runtime_engine"] = RuntimeEngine(runtime_str)
+
+                                new_cluster_obj = ClusterSpec(**new_cluster_dict)
+                                logger.debug("DEBUG: Created ClusterSpec object with proper enums")
+                                cluster_dict["new_cluster"] = new_cluster_obj
+                            except Exception as e:
+                                logger.debug("DEBUG: Failed to create ClusterSpec: %s, keeping as dict", str(e))
+
+                        job_cluster = JobCluster(**cluster_dict)
+                        job_clusters_list.append(job_cluster)
+                    job_settings_kwargs["job_clusters"] = job_clusters_list
+                    logger.debug("DEBUG: Converted %d job_clusters to JobCluster objects", len(job_clusters_list))
+
+                logger.debug("DEBUG: job_settings_kwargs keys: %s", list(job_settings_kwargs.keys()))
+                if "job_clusters" in job_settings_kwargs:
+                    logger.debug("DEBUG: job_clusters type: %s", type(job_settings_kwargs["job_clusters"]))
+                    if job_settings_kwargs["job_clusters"]:
+                        logger.debug("DEBUG: job_clusters[0] type: %s", type(job_settings_kwargs["job_clusters"][0]))
+                        if hasattr(job_settings_kwargs["job_clusters"][0], "new_cluster"):
+                            logger.debug(
+                                "DEBUG: job_clusters[0].new_cluster type: %s",
+                                type(job_settings_kwargs["job_clusters"][0].new_cluster),
+                            )
+                logger.debug("DEBUG: Calling jobs.create() with SDK objects (Task and JobCluster)")
+                created_job = self.workspace_client.jobs.create(**job_settings_kwargs)
+            finally:
+                if ClusterSpec and original_cluster_spec_as_dict:
+                    ClusterSpec.as_dict = original_cluster_spec_as_dict
+                JobCluster.as_dict = original_job_cluster_as_dict
             created_job_id = created_job.job_id
             if not created_job_id:
                 raise RuntimeError(f"Job creation succeeded but no job_id returned: " f"{created_job}")

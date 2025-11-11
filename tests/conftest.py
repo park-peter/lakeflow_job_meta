@@ -56,8 +56,8 @@ def sample_task_data():
         'task_key': 'test_task_1',
         'depends_on': '[]',
         'task_type': 'notebook',
-        'parameters': '{"catalog": "bronze", "schema": "raw_data", "source_table": "source_table", "target_table": "target_table"}',
-        'task_config': '{"file_path": "/Workspace/test/notebook"}',
+        'job_config': '{"timeout_seconds": 7200}',
+        'task_config': '{"file_path": "/Workspace/test/notebook", "parameters": {"catalog": "bronze", "schema": "raw_data", "source_table": "source_table", "target_table": "target_table"}}',
         'disabled': False
     }
 

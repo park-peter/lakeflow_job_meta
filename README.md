@@ -184,8 +184,8 @@ INSERT INTO your_catalog.schema.etl_control VALUES (
   'sql_task_1',            -- task_key
   '[]',                     -- depends_on (JSON array of task_keys, empty for no dependencies)
   'sql_query',             -- task_type
-  '{"catalog": "my_cat"}', -- parameters (JSON string)
-  '{"warehouse_id": "abc123", "sql_query": "SELECT * FROM bronze.customers"}', -- task_config (JSON string)
+  '{"timeout_seconds": 7200, "tags": {"department": "engineering"}}', -- job_config (JSON string)
+  '{"warehouse_id": "abc123", "sql_query": "SELECT * FROM bronze.customers", "parameters": {"catalog": "my_cat"}}', -- task_config (JSON string)
   false                    -- disabled
 );
 ```
@@ -261,23 +261,26 @@ Each job in your YAML must have:
 jobs:
   - job_name: "my_pipeline"      # Required: Job name (becomes job_name in control table)
     description: "Pipeline description"  # Optional: Description
-    job_config:                      # Optional: Job-level settings
-      timeout_seconds: 7200          # Optional: Job timeout (default: 7200)
-      max_concurrent_runs: 2         # Optional: Max concurrent runs (default: 1)
-      queue:                         # Optional: Job queue settings
-        enabled: true
-      continuous:                    # Optional: Continuous job settings
-        pause_status: UNPAUSED
-        task_retry_mode: ON_FAILURE
-      trigger:                       # Optional: Job trigger (file_arrival, table_update, or periodic)
-        pause_status: UNPAUSED
-        file_arrival:
-          url: /Volumes/catalog/schema/folder/
-      # OR use schedule instead of trigger:
-      # schedule:                    # Optional: Scheduled job (cron)
-      #   quartz_cron_expression: "13 2 15 * * ?"
-      #   timezone_id: UTC
-      #   pause_status: UNPAUSED
+    timeout_seconds: 7200          # Optional: Job timeout (default: 7200)
+    max_concurrent_runs: 2         # Optional: Max concurrent runs (default: 1)
+    parameters:                    # Optional: Job-level parameters (pushed down to tasks automatically)
+      default_catalog: "my_catalog"
+    tags:                          # Optional: Job tags
+      department: "engineering"
+    queue:                         # Optional: Job queue settings
+      enabled: true
+    continuous:                    # Optional: Continuous job settings
+      pause_status: UNPAUSED
+      task_retry_mode: ON_FAILURE
+    trigger:                       # Optional: Job trigger (file_arrival, table_update, or periodic)
+      pause_status: UNPAUSED
+      file_arrival:
+        url: /Volumes/catalog/schema/folder/
+    # OR use schedule instead of trigger:
+    # schedule:                    # Optional: Scheduled job (cron)
+    #   quartz_cron_expression: "13 2 15 * * ?"
+    #   timezone_id: UTC
+    #   pause_status: UNPAUSED
     tasks:
       - task_key: "unique_id"        # Required: Unique task identifier
         task_type: "sql_query"       # Required: Type of task (see "Task Types and Parameters" section below)
@@ -314,8 +317,8 @@ CREATE TABLE control_table (
     task_key STRING,              -- Unique task identifier
     depends_on STRING,            -- JSON array of task_key strings this task depends on
     task_type STRING,             -- Task type: notebook, sql_query, sql_file, python_wheel, spark_jar, pipeline, or dbt
-    parameters STRING,            -- JSON string with task parameters
-    task_config STRING,           -- JSON string with task-specific config (file_path, warehouse_id, sql_query, etc.)
+    job_config STRING,            -- JSON string with job-level settings (tags, parameters, timeout_seconds, etc.)
+    task_config STRING,           -- JSON string with task-specific config including parameters
     disabled BOOLEAN DEFAULT false, -- Whether task is disabled
     created_by STRING,            -- Username who created the record
     created_timestamp TIMESTAMP DEFAULT current_timestamp(),
@@ -343,10 +346,15 @@ CREATE TABLE jobs_table (
 
 ### Job-Level Settings
 
-Job-level settings (`job_config`) control the behavior of the entire Databricks job:
+Job-level settings control the behavior of the entire Databricks job. These settings are defined directly at the job level (not nested under `job_config`):
 
 - `timeout_seconds`: Maximum time the job can run (default: 7200 seconds)
 - `max_concurrent_runs`: Maximum number of concurrent runs (default: 1)
+- `parameters`: Job-level parameters (key-value pairs) that are automatically pushed down to tasks that support key-value parameters
+- `tags`: Job tags (key-value pairs)
+- `job_clusters`: Job-level cluster definitions (referenced by tasks via `job_cluster_key`)
+- `environments`: Job-level environment definitions (referenced by tasks via `environment_key`)
+- `notification_settings`: Job-level notification settings
 - `queue`: Job queue settings (`enabled: true/false`)
 - `continuous`: Continuous job settings
   - `pause_status`: `UNPAUSED` or `PAUSED`

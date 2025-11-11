@@ -30,6 +30,7 @@ def create_or_update_job(
     default_warehouse_id: Optional[str] = None,
     jobs_table: Optional[str] = None,
     workspace_client: Optional[Any] = None,
+    default_queries_path: Optional[str] = None,
 ) -> int:
     """Convenience function to create or update a single job.
 
@@ -41,6 +42,8 @@ def create_or_update_job(
         default_warehouse_id: Optional default SQL warehouse ID for SQL tasks
         jobs_table: Optional custom name for the jobs tracking table
         workspace_client: Optional WorkspaceClient instance
+        default_queries_path: Optional directory path where inline SQL queries
+            will be saved (e.g., "/Workspace/Shared/LakeflowQueriesMeta")
 
     Returns:
         The job ID (either updated or newly created)
@@ -51,7 +54,8 @@ def create_or_update_job(
 
         job_id = jm.create_or_update_job(
             "my_pipeline",
-            control_table="catalog.schema.etl_control"
+            control_table="catalog.schema.etl_control",
+            default_queries_path="/Workspace/Shared/Queries"
         )
         ```
     """
@@ -60,6 +64,7 @@ def create_or_update_job(
         jobs_table=jobs_table,
         workspace_client=workspace_client,
         default_warehouse_id=default_warehouse_id,
+        default_queries_path=default_queries_path,
     )
     return orchestrator.create_or_update_job(job_name, cluster_id=cluster_id)
 
@@ -72,6 +77,7 @@ def create_or_update_jobs(
     default_warehouse_id: Optional[str] = None,
     jobs_table: Optional[str] = None,
     workspace_client: Optional[Any] = None,
+    default_queries_path: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Convenience function to create or update all jobs in the control table.
 
@@ -84,6 +90,8 @@ def create_or_update_jobs(
         default_warehouse_id: Optional default SQL warehouse ID for SQL tasks
         jobs_table: Optional custom name for the jobs tracking table
         workspace_client: Optional WorkspaceClient instance
+        default_queries_path: Optional directory path where inline SQL queries
+            will be saved (e.g., "/Workspace/Shared/LakeflowQueriesMeta")
 
     Returns:
         List of dictionaries with job names and job IDs
@@ -94,7 +102,8 @@ def create_or_update_jobs(
 
         jobs = jm.create_or_update_jobs(
             control_table="catalog.schema.etl_control",
-            auto_run=False
+            auto_run=False,
+            default_queries_path="/Workspace/Shared/Queries"
         )
         ```
     """
@@ -103,6 +112,7 @@ def create_or_update_jobs(
         jobs_table=jobs_table,
         workspace_client=workspace_client,
         default_warehouse_id=default_warehouse_id,
+        default_queries_path=default_queries_path,
     )
     return orchestrator.create_or_update_jobs(
         auto_run=auto_run, yaml_path=yaml_path, sync_yaml=sync_yaml
