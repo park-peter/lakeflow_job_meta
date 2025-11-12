@@ -186,6 +186,7 @@ jobs:
         task_type: "dbt"
         commands: "dbt run --models my_model"
         warehouse_id: "4b9b953939869799"
+        project_directory: "/Workspace/Users/peter.park@databricks.com/dbt-project"
         catalog: "fe_ppark_demo"
         schema: "lakeflow_job_metadata"
 
