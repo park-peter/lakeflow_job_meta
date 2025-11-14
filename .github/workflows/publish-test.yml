@@ -50,6 +50,31 @@ jobs:
         python -m pip install --upgrade pip
         pip install build twine
     
+    - name: Extract and validate version
+      id: version
+      run: |
+        TAG_VERSION=${GITHUB_REF#refs/tags/v}
+        SETUP_VERSION=$(grep "version=" setup.py | head -1 | sed 's/.*version="\(.*\)".*/\1/')
+        echo "Tag version: $TAG_VERSION"
+        echo "Setup version: $SETUP_VERSION"
+        echo "tag_version=$TAG_VERSION" >> $GITHUB_OUTPUT
+        echo "setup_version=$SETUP_VERSION" >> $GITHUB_OUTPUT
+        
+        # For RC/beta tags, verify the base version matches
+        if [[ $TAG_VERSION =~ ^([0-9]+\.[0-9]+\.[0-9]+)-(rc|beta)([0-9]+)$ ]]; then
+          BASE_VERSION="${BASH_REMATCH[1]}"
+          SUFFIX="${BASH_REMATCH[2]}${BASH_REMATCH[3]}"
+          EXPECTED_VERSION="${BASE_VERSION}${SUFFIX}"
+          echo "Expected version format: $EXPECTED_VERSION"
+          
+          # Check if setup.py version matches expected format
+          if [ "$SETUP_VERSION" != "$EXPECTED_VERSION" ]; then
+            echo "⚠️  Warning: Tag is $TAG_VERSION but setup.py has version $SETUP_VERSION"
+            echo "💡 For TestPyPI, you should update setup.py to version='$EXPECTED_VERSION'"
+            echo "   Example: version='0.1.1rc1' (no hyphen in setup.py)"
+          fi
+        fi
+    
     - name: Build package
       run: |
         python -m build
