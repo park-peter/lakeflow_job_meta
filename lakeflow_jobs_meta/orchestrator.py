@@ -22,6 +22,17 @@ from databricks.sdk.service.jobs import (
 )
 
 try:
+    from databricks.sdk.service.jobs import (
+        FileArrivalTriggerConfiguration,
+        PeriodicTriggerConfiguration,
+        TableUpdateTriggerConfiguration,
+    )
+except ImportError:
+    FileArrivalTriggerConfiguration = None
+    PeriodicTriggerConfiguration = None
+    TableUpdateTriggerConfiguration = None
+
+try:
     from databricks.sdk.service.compute import (
         ClusterSpec,
         Environment as ComputeEnvironment,
@@ -138,7 +149,21 @@ class JobSettingsWithDictTasks(JobSettings):
         if hasattr(self, "tags") and self.tags is not None:
             result["tags"] = self.tags
         if hasattr(self, "parameters") and self.parameters is not None:
-            result["parameters"] = self.parameters
+            # Convert JobParameterDefinition objects to dicts
+            if isinstance(self.parameters, list):
+                result["parameters"] = []
+                for param in self.parameters:
+                    if isinstance(param, dict):
+                        result["parameters"].append(param)
+                    elif hasattr(param, "as_dict"):
+                        try:
+                            result["parameters"].append(param.as_dict())
+                        except (AttributeError, TypeError):
+                            result["parameters"].append(param)
+                    else:
+                        result["parameters"].append(param)
+            else:
+                result["parameters"] = self.parameters
         if hasattr(self, "job_clusters") and self.job_clusters is not None:
             result["job_clusters"] = []
             for cluster in self.job_clusters:
@@ -254,6 +279,206 @@ def _apply_default_pause_status(
     return job_config
 
 
+def _convert_cloud_attributes(new_cluster_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert cloud provider attributes to SDK objects with enum handling.
+
+    Args:
+        new_cluster_dict: Dictionary with new_cluster configuration
+
+    Returns:
+        Modified dictionary with cloud attributes as SDK objects
+    """
+    new_cluster_dict_copy = new_cluster_dict.copy()
+
+    # Process AWS attributes
+    aws_attrs_dict = new_cluster_dict_copy.pop("aws_attributes", None)
+    if AwsAttributes and aws_attrs_dict:
+        try:
+            aws_attrs_dict_copy = aws_attrs_dict.copy()
+            if "availability" in aws_attrs_dict_copy and AwsAvailability:
+                availability_str = aws_attrs_dict_copy["availability"]
+                if isinstance(availability_str, str):
+                    aws_attrs_dict_copy["availability"] = AwsAvailability(availability_str)
+            if "ebs_volume_type" in aws_attrs_dict_copy and EbsVolumeType:
+                ebs_type_str = aws_attrs_dict_copy["ebs_volume_type"]
+                if isinstance(ebs_type_str, str):
+                    aws_attrs_dict_copy["ebs_volume_type"] = EbsVolumeType(ebs_type_str)
+            new_cluster_dict_copy["aws_attributes"] = AwsAttributes(**aws_attrs_dict_copy)
+        except Exception:
+            new_cluster_dict_copy["aws_attributes"] = aws_attrs_dict
+
+    # Process Azure attributes
+    azure_attrs_dict = new_cluster_dict_copy.pop("azure_attributes", None)
+    if AzureAttributes and azure_attrs_dict:
+        try:
+            azure_attrs_dict_copy = azure_attrs_dict.copy()
+            if "availability" in azure_attrs_dict_copy and AzureAvailability:
+                availability_str = azure_attrs_dict_copy["availability"]
+                if isinstance(availability_str, str):
+                    azure_attrs_dict_copy["availability"] = AzureAvailability(availability_str)
+            new_cluster_dict_copy["azure_attributes"] = AzureAttributes(**azure_attrs_dict_copy)
+        except Exception:
+            new_cluster_dict_copy["azure_attributes"] = azure_attrs_dict
+
+    # Process GCP attributes
+    gcp_attrs_dict = new_cluster_dict_copy.pop("gcp_attributes", None)
+    if GcpAttributes and gcp_attrs_dict:
+        try:
+            gcp_attrs_dict_copy = gcp_attrs_dict.copy()
+            if "availability" in gcp_attrs_dict_copy and GcpAvailability:
+                availability_str = gcp_attrs_dict_copy["availability"]
+                if isinstance(availability_str, str):
+                    gcp_attrs_dict_copy["availability"] = GcpAvailability(availability_str)
+            new_cluster_dict_copy["gcp_attributes"] = GcpAttributes(**gcp_attrs_dict_copy)
+        except Exception:
+            new_cluster_dict_copy["gcp_attributes"] = gcp_attrs_dict
+
+    # Process data security mode
+    if "data_security_mode" in new_cluster_dict_copy and DataSecurityMode:
+        data_security_str = new_cluster_dict_copy["data_security_mode"]
+        if isinstance(data_security_str, str):
+            new_cluster_dict_copy["data_security_mode"] = DataSecurityMode(data_security_str)
+
+    # Process runtime engine
+    if "runtime_engine" in new_cluster_dict_copy and RuntimeEngine:
+        runtime_str = new_cluster_dict_copy["runtime_engine"]
+        if isinstance(runtime_str, str):
+            new_cluster_dict_copy["runtime_engine"] = RuntimeEngine(runtime_str)
+
+    return new_cluster_dict_copy
+
+
+def _process_job_clusters(job_clusters_config: List[Dict[str, Any]], job_name: str) -> List[JobCluster]:
+    """Process job clusters configuration into SDK objects.
+
+    Args:
+        job_clusters_config: List of job cluster dictionaries
+        job_name: Name of the job (for logging)
+
+    Returns:
+        List of JobCluster SDK objects
+    """
+    job_clusters_list = []
+
+    for cluster_dict in job_clusters_config:
+        if isinstance(cluster_dict, dict):
+            new_cluster_dict = cluster_dict.get("new_cluster", {})
+            if ClusterSpec and new_cluster_dict:
+                try:
+                    new_cluster_dict_converted = _convert_cloud_attributes(new_cluster_dict)
+                    new_cluster_obj = ClusterSpec(**new_cluster_dict_converted)
+                    job_clusters_list.append(
+                        JobCluster(
+                            job_cluster_key=cluster_dict["job_cluster_key"],
+                            new_cluster=new_cluster_obj,
+                        )
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Job '{job_name}': Failed to create job cluster "
+                        f"'{cluster_dict.get('job_cluster_key')}': {e}"
+                    )
+            else:
+                try:
+                    job_clusters_list.append(JobCluster(**cluster_dict))
+                except Exception:
+                    pass
+        elif hasattr(cluster_dict, "job_cluster_key"):
+            job_clusters_list.append(cluster_dict)
+
+    return job_clusters_list
+
+
+def _process_environments(environments_config: List[Dict[str, Any]]) -> List:
+    """Process environments configuration into SDK objects.
+
+    Args:
+        environments_config: List of environment dictionaries
+
+    Returns:
+        List of JobEnvironment SDK objects or dicts
+    """
+    environments_list = []
+
+    for env_dict in environments_config:
+        if isinstance(env_dict, dict):
+            if JobEnvironment and ComputeEnvironment:
+                try:
+                    spec_dict = env_dict.get("spec", {})
+                    if spec_dict:
+                        spec = ComputeEnvironment(**spec_dict)
+                        env = JobEnvironment(environment_key=env_dict["environment_key"], spec=spec)
+                        environments_list.append(env)
+                    else:
+                        environments_list.append(env_dict)
+                except Exception:
+                    environments_list.append(env_dict)
+            else:
+                environments_list.append(env_dict)
+        elif hasattr(env_dict, "as_dict"):
+            environments_list.append(env_dict)
+        else:
+            environments_list.append(env_dict)
+
+    return environments_list
+
+
+def _process_notification_settings(notif_config: Dict[str, Any]) -> TaskNotificationSettings:
+    """Process notification settings configuration into SDK object.
+
+    Args:
+        notif_config: Notification settings dictionary
+
+    Returns:
+        TaskNotificationSettings SDK object
+    """
+    email_notif_obj = None
+    if "email_notifications" in notif_config:
+        email_config = notif_config["email_notifications"]
+        if isinstance(email_config, dict):
+            email_notif_obj = JobEmailNotifications(
+                on_start=email_config.get("on_start", []),
+                on_success=email_config.get("on_success", []),
+                on_failure=email_config.get("on_failure", []),
+                on_duration_warning_threshold_exceeded=email_config.get("on_duration_warning_threshold_exceeded", []),
+            )
+
+    notification_settings = TaskNotificationSettings(
+        no_alert_for_skipped_runs=notif_config.get("no_alert_for_skipped_runs"),
+        no_alert_for_canceled_runs=notif_config.get("no_alert_for_canceled_runs"),
+        alert_on_last_attempt=notif_config.get("alert_on_last_attempt"),
+    )
+
+    if email_notif_obj:
+        notification_settings.email_notifications = email_notif_obj
+
+    return notification_settings
+
+
+def _process_parameters(params_list: List) -> List:
+    """Process parameters configuration into SDK objects.
+
+    Args:
+        params_list: List of parameter dictionaries or objects
+
+    Returns:
+        List of JobParameterDefinition SDK objects
+    """
+    job_params = []
+
+    for param_dict in params_list:
+        if isinstance(param_dict, dict):
+            job_param = JobParameterDefinition(
+                name=param_dict.get("name"),
+                default=param_dict.get("default"),
+            )
+            job_params.append(job_param)
+        else:
+            job_params.append(param_dict)
+
+    return job_params
+
+
 def _convert_job_setting_to_sdk_object(setting_type: str, setting_dict: Dict[str, Any]) -> Any:
     """Convert job setting dict to SDK object with proper enum handling.
 
@@ -290,10 +515,48 @@ def _convert_job_setting_to_sdk_object(setting_type: str, setting_dict: Dict[str
         elif setting_type == "queue":
             return QueueSettings(**setting_dict)
         elif setting_type == "trigger":
-            return TriggerSettings(**setting_dict)
+            # Handle pause_status enum conversion and nested trigger configurations
+            trigger_kwargs = {}
+
+            # Handle pause_status
+            if "pause_status" in setting_dict and isinstance(setting_dict["pause_status"], str):
+                trigger_kwargs["pause_status"] = PauseStatus(setting_dict["pause_status"])
+            elif "pause_status" in setting_dict:
+                trigger_kwargs["pause_status"] = setting_dict["pause_status"]
+
+            # Handle file_arrival
+            if "file_arrival" in setting_dict and FileArrivalTriggerConfiguration:
+                file_arrival_dict = setting_dict["file_arrival"]
+                if isinstance(file_arrival_dict, dict):
+                    trigger_kwargs["file_arrival"] = FileArrivalTriggerConfiguration(**file_arrival_dict)
+                else:
+                    trigger_kwargs["file_arrival"] = file_arrival_dict
+
+            # Handle periodic
+            if "periodic" in setting_dict and PeriodicTriggerConfiguration:
+                periodic_dict = setting_dict["periodic"]
+                if isinstance(periodic_dict, dict):
+                    trigger_kwargs["periodic"] = PeriodicTriggerConfiguration(**periodic_dict)
+                else:
+                    trigger_kwargs["periodic"] = periodic_dict
+
+            # Handle table_update
+            if "table_update" in setting_dict and TableUpdateTriggerConfiguration:
+                table_update_dict = setting_dict["table_update"]
+                if isinstance(table_update_dict, dict):
+                    trigger_kwargs["table_update"] = TableUpdateTriggerConfiguration(**table_update_dict)
+                else:
+                    trigger_kwargs["table_update"] = table_update_dict
+
+            return TriggerSettings(**trigger_kwargs)
         elif setting_type == "schedule":
-            return CronSchedule(**setting_dict)
-    except (TypeError, ValueError, AttributeError):
+            # Handle pause_status enum conversion
+            schedule_kwargs = dict(setting_dict)
+            if "pause_status" in schedule_kwargs and isinstance(schedule_kwargs["pause_status"], str):
+                schedule_kwargs["pause_status"] = PauseStatus(schedule_kwargs["pause_status"])
+            return CronSchedule(**schedule_kwargs)
+    except (TypeError, ValueError, AttributeError) as e:
+        logger.warning(f"Failed to convert {setting_type} to SDK object: {e}. Using dict representation.")
         return setting_dict
 
     return setting_dict
@@ -385,6 +648,7 @@ class JobOrchestrator:
             spark.sql(
                 f"""
                 CREATE TABLE IF NOT EXISTS {self.jobs_table} (
+                    resource_id STRING,
                     job_id BIGINT,
                     job_name STRING,
                     created_by STRING,
@@ -407,12 +671,16 @@ class JobOrchestrator:
         self.metadata_manager.ensure_exists()
         self._create_job_tracking_table()
 
-    def _get_stored_job_id(self, job_name: str) -> Optional[int]:
-        """Get stored job_id for a job from Delta table (internal)."""
+    def _get_stored_job_id(self, resource_id: str) -> Optional[int]:
+        """Get stored job_id for a job from Delta table using resource_id (internal)."""
         spark = _get_spark()
         try:
             job_id_rows = (
-                spark.table(self.jobs_table).filter(F.col("job_name") == job_name).select("job_id").limit(1).collect()
+                spark.table(self.jobs_table)
+                .filter(F.col("resource_id") == resource_id)
+                .select("job_id")
+                .limit(1)
+                .collect()
             )
 
             if job_id_rows:
@@ -420,19 +688,20 @@ class JobOrchestrator:
             return None
         except Exception as e:
             logger.warning(
-                "Job '%s': Could not retrieve job_id: %s",
-                job_name,
+                "Job (resource_id='%s'): Could not retrieve job_id: %s",
+                resource_id,
                 str(e),
             )
             return None
 
-    def _store_job_id(self, job_name: str, job_id: int) -> None:
+    def _store_job_id(self, resource_id: str, job_name: str, job_id: int) -> None:
         """Store/update job_id for a job in Delta table (internal)."""
         spark = _get_spark()
         try:
             current_user = _get_current_user()
             source_data = [
                 Row(
+                    resource_id=resource_id,
                     job_name=job_name,
                     job_id=job_id,
                     created_by=current_user,
@@ -446,25 +715,26 @@ class JobOrchestrator:
                 f"""
                 MERGE INTO {self.jobs_table} AS target
                 USING source_data AS source
-                ON target.job_name = source.job_name
+                ON target.resource_id = source.resource_id
                 WHEN MATCHED THEN
                     UPDATE SET
+                        job_name = source.job_name,
                         job_id = source.job_id,
                         updated_by = source.updated_by,
                         updated_timestamp = source.updated_timestamp
                 WHEN NOT MATCHED THEN
                     INSERT (
-                        job_name, job_id, created_by, updated_by,
+                        resource_id, job_name, job_id, created_by, updated_by,
                         updated_timestamp
                     )
                     VALUES (
-                        source.job_name, source.job_id, source.created_by,
+                        source.resource_id, source.job_name, source.job_id, source.created_by,
                         source.updated_by, source.updated_timestamp
                     )
             """
             )
 
-            logger.info("Job '%s': Stored job_id %d", job_name, job_id)
+            logger.info("Job '%s' (resource_id='%s'): Stored job_id %d", job_name, resource_id, job_id)
         except Exception as e:
             logger.error("Could not store job_id: %s", str(e))
             raise RuntimeError(f"Failed to store job_id for job '{job_name}': {str(e)}") from e
@@ -556,33 +826,36 @@ class JobOrchestrator:
 
         return default_settings
 
-    def generate_tasks_for_job(self, job_name: str, return_first_task: bool = False):
+    def generate_tasks_for_job(self, resource_id: str, return_first_task: bool = False):
         """Generate task configurations for a job based on metadata.
 
         Uses dependency resolution to determine execution order.
 
         Args:
-            job_name: Name of the job to generate tasks for
+            resource_id: Resource ID of the job (YAML dict key)
             return_first_task: If True, also return first task dict for optimization
 
         Returns:
             List of task configuration dictionaries, optionally with first task dict
 
         Raises:
-            ValueError: If job_name is invalid, no tasks found, circular dependencies, or invalid config
+            ValueError: If resource_id is invalid, no tasks found, circular dependencies, or invalid config
             RuntimeError: If control table doesn't exist or is inaccessible
         """
-        if not job_name or not isinstance(job_name, str):
-            raise ValueError("job_name must be a non-empty string")
+        if not resource_id or not isinstance(resource_id, str):
+            raise ValueError("resource_id must be a non-empty string")
 
         spark = _get_spark()
         try:
-            job_tasks = spark.table(self.control_table).filter(F.col("job_name") == job_name).collect()
+            job_tasks = spark.table(self.control_table).filter(F.col("resource_id") == resource_id).collect()
         except Exception as e:
             raise RuntimeError(f"Failed to read control table " f"'{self.control_table}': {str(e)}") from e
 
         if not job_tasks:
-            raise ValueError(f"No tasks found for job '{job_name}'")
+            raise ValueError(f"No tasks found for resource_id '{resource_id}'")
+
+        # Get job_name from the first task (all tasks in a job have the same job_name)
+        job_name = job_tasks[0]["job_name"]
 
         # Convert rows to dicts and parse depends_on
         task_dicts: Dict[str, Dict[str, Any]] = {}
@@ -687,22 +960,23 @@ class JobOrchestrator:
             return tasks, first_task_dict
         return tasks
 
-    def sync_from_volume(self, volume_path: str):
+    def sync_from_volume(self, volume_path: str, var: Optional[Dict[str, Any]] = None):
         """Load metadata from Unity Catalog volume.
 
         Delegates to MetadataManager.sync_from_volume.
 
         Args:
             volume_path: Path to Unity Catalog volume (e.g., "/Volumes/catalog/schema/volume")
+            var: Optional dictionary of variables for ${var.name} substitution
 
         Returns:
             Tuple of (tasks_loaded, job_names)
         """
-        return self.metadata_manager.sync_from_volume(volume_path)
+        return self.metadata_manager.sync_from_volume(volume_path, var=var)
 
     def create_or_update_job(
         self,
-        job_name: str,
+        resource_id: str,
         default_pause_status: bool = False,
     ) -> int:
         """Create new job or update existing job using stored job_id.
@@ -710,10 +984,10 @@ class JobOrchestrator:
         Follows Databricks Jobs API requirements:
         - Uses JobSettings for both create and update operations
         - Tasks are required (will raise ValueError if empty)
-        - Job name in Databricks will be the same as job_name from metadata
+        - Job name in Databricks comes from 'name' field or defaults to resource_id
 
         Args:
-            job_name: Name of the job (from job_name in YAML)
+            resource_id: Resource ID of the job (YAML dict key)
             default_pause_status: Default pause state for jobs with triggers/schedules.
                 Only applies if pause_status not explicitly set in metadata.
                 For job updates, only applies if pause_status is explicitly set.
@@ -725,11 +999,24 @@ class JobOrchestrator:
             ValueError: If inputs are invalid or no tasks found
             RuntimeError: If job creation/update fails
         """
-        if not job_name or not isinstance(job_name, str):
-            raise ValueError("job_name must be a non-empty string")
+        if not resource_id or not isinstance(resource_id, str):
+            raise ValueError("resource_id must be a non-empty string")
 
-        # Get stored job_id from jobs table
-        stored_job_id = self._get_stored_job_id(job_name)
+        # Get job_name from control table (first task's job_name)
+        spark = _get_spark()
+        try:
+            first_task_row = (
+                spark.table(self.control_table).filter(F.col("resource_id") == resource_id).limit(1).collect()
+            )
+            if not first_task_row:
+                raise ValueError(f"No tasks found for resource_id '{resource_id}'")
+            first_task = _task_row_to_dict(first_task_row[0])
+            job_name = first_task["job_name"]
+        except Exception as e:
+            raise ValueError(f"Failed to get job_name for resource_id '{resource_id}': {str(e)}") from e
+
+        # Get stored job_id from jobs table using resource_id
+        stored_job_id = self._get_stored_job_id(resource_id)
 
         # Verify if job actually exists in Databricks
         job_exists_in_databricks = False
@@ -750,7 +1037,7 @@ class JobOrchestrator:
                     raise
 
         # Generate task definitions
-        task_definitions, first_task_dict = self.generate_tasks_for_job(job_name, return_first_task=True)
+        task_definitions, first_task_dict = self.generate_tasks_for_job(resource_id, return_first_task=True)
 
         if not task_definitions or len(task_definitions) == 0:
             raise ValueError(f"No tasks found for job '{job_name}'. " f"Cannot create job without tasks.")
@@ -845,151 +1132,31 @@ class JobOrchestrator:
             # Add tags, job_clusters, environments, and notification_settings if specified
             if job_settings_config.get("tags"):
                 job_settings.tags = job_settings_config["tags"]
+
+            # Process job clusters
             job_clusters_config = job_settings_config.get("job_clusters")
             if job_clusters_config and isinstance(job_clusters_config, list):
-                job_clusters_list = []
-                for cluster_dict in job_clusters_config:
-                    if isinstance(cluster_dict, dict):
-                        new_cluster_dict = cluster_dict.get("new_cluster", {})
-                        if ClusterSpec and new_cluster_dict:
-                            try:
-                                new_cluster_dict_copy = new_cluster_dict.copy()
-
-                                aws_attrs_dict = new_cluster_dict_copy.pop("aws_attributes", None)
-                                aws_attrs_obj = None
-                                if AwsAttributes and aws_attrs_dict:
-                                    try:
-                                        aws_attrs_dict_copy = aws_attrs_dict.copy()
-                                        if "availability" in aws_attrs_dict_copy and AwsAvailability:
-                                            availability_str = aws_attrs_dict_copy["availability"]
-                                            if isinstance(availability_str, str):
-                                                aws_attrs_dict_copy["availability"] = AwsAvailability(availability_str)
-                                        if "ebs_volume_type" in aws_attrs_dict_copy and EbsVolumeType:
-                                            ebs_type_str = aws_attrs_dict_copy["ebs_volume_type"]
-                                            if isinstance(ebs_type_str, str):
-                                                aws_attrs_dict_copy["ebs_volume_type"] = EbsVolumeType(ebs_type_str)
-                                        aws_attrs_obj = AwsAttributes(**aws_attrs_dict_copy)
-                                    except Exception:
-                                        pass
-
-                                if aws_attrs_obj:
-                                    new_cluster_dict_copy["aws_attributes"] = aws_attrs_obj
-
-                                azure_attrs_dict = new_cluster_dict_copy.pop("azure_attributes", None)
-                                azure_attrs_obj = None
-                                if AzureAttributes and azure_attrs_dict:
-                                    try:
-                                        azure_attrs_dict_copy = azure_attrs_dict.copy()
-                                        if "availability" in azure_attrs_dict_copy and AzureAvailability:
-                                            availability_str = azure_attrs_dict_copy["availability"]
-                                            if isinstance(availability_str, str):
-                                                azure_attrs_dict_copy["availability"] = AzureAvailability(
-                                                    availability_str
-                                                )
-                                        azure_attrs_obj = AzureAttributes(**azure_attrs_dict_copy)
-                                    except Exception:
-                                        pass
-
-                                if azure_attrs_obj:
-                                    new_cluster_dict_copy["azure_attributes"] = azure_attrs_obj
-
-                                gcp_attrs_dict = new_cluster_dict_copy.pop("gcp_attributes", None)
-                                gcp_attrs_obj = None
-                                if GcpAttributes and gcp_attrs_dict:
-                                    try:
-                                        gcp_attrs_dict_copy = gcp_attrs_dict.copy()
-                                        if "availability" in gcp_attrs_dict_copy and GcpAvailability:
-                                            availability_str = gcp_attrs_dict_copy["availability"]
-                                            if isinstance(availability_str, str):
-                                                gcp_attrs_dict_copy["availability"] = GcpAvailability(availability_str)
-                                        gcp_attrs_obj = GcpAttributes(**gcp_attrs_dict_copy)
-                                    except Exception:
-                                        pass
-
-                                if gcp_attrs_obj:
-                                    new_cluster_dict_copy["gcp_attributes"] = gcp_attrs_obj
-
-                                if "data_security_mode" in new_cluster_dict_copy and DataSecurityMode:
-                                    data_security_str = new_cluster_dict_copy["data_security_mode"]
-                                    if isinstance(data_security_str, str):
-                                        new_cluster_dict_copy["data_security_mode"] = DataSecurityMode(
-                                            data_security_str
-                                        )
-
-                                if "runtime_engine" in new_cluster_dict_copy and RuntimeEngine:
-                                    runtime_str = new_cluster_dict_copy["runtime_engine"]
-                                    if isinstance(runtime_str, str):
-                                        new_cluster_dict_copy["runtime_engine"] = RuntimeEngine(runtime_str)
-
-                                new_cluster_obj = ClusterSpec(**new_cluster_dict_copy)
-                                job_clusters_list.append(
-                                    JobCluster(
-                                        job_cluster_key=cluster_dict["job_cluster_key"],
-                                        new_cluster=new_cluster_obj,
-                                    )
-                                )
-                            except Exception:
-                                pass
-                    elif hasattr(cluster_dict, "job_cluster_key"):
-                        job_clusters_list.append(cluster_dict)
+                job_clusters_list = _process_job_clusters(job_clusters_config, job_name)
                 if job_clusters_list:
                     job_settings.job_clusters = job_clusters_list
+
+            # Process environments
             environments_config = job_settings_config.get("environments")
             if environments_config and isinstance(environments_config, list):
-                environments_list = []
-                for env_dict in environments_config:
-                    if isinstance(env_dict, dict):
-                        if JobEnvironment and ComputeEnvironment:
-                            try:
-                                spec_dict = env_dict.get("spec", {})
-                                if spec_dict:
-                                    spec = ComputeEnvironment(**spec_dict)
-                                    env = JobEnvironment(environment_key=env_dict["environment_key"], spec=spec)
-                                    environments_list.append(env)
-                            except Exception:
-                                pass
-                    elif hasattr(env_dict, "as_dict"):
-                        environments_list.append(env_dict)
-                    else:
-                        environments_list.append(env_dict)
+                environments_list = _process_environments(environments_config)
                 if environments_list:
                     job_settings.environments = environments_list
+
+            # Process notification settings
             notif_config = job_settings_config.get("notification_settings")
             if notif_config and isinstance(notif_config, dict):
-                email_notif_obj = None
-                if "email_notifications" in notif_config:
-                    email_config = notif_config["email_notifications"]
-                    if isinstance(email_config, dict):
-                        email_notif_obj = JobEmailNotifications(
-                            on_start=email_config.get("on_start", []),
-                            on_success=email_config.get("on_success", []),
-                            on_failure=email_config.get("on_failure", []),
-                            on_duration_warning_threshold_exceeded=email_config.get(
-                                "on_duration_warning_threshold_exceeded", []
-                            ),
-                        )
-                job_settings.notification_settings = TaskNotificationSettings(
-                    no_alert_for_skipped_runs=notif_config.get("no_alert_for_skipped_runs"),
-                    no_alert_for_canceled_runs=notif_config.get("no_alert_for_canceled_runs"),
-                    alert_on_last_attempt=notif_config.get("alert_on_last_attempt"),
-                )
-                if email_notif_obj:
-                    job_settings.notification_settings.email_notifications = email_notif_obj
+                job_settings.notification_settings = _process_notification_settings(notif_config)
 
+            # Process parameters
             if job_settings_config.get("parameters"):
                 params_list = job_settings_config["parameters"]
                 if isinstance(params_list, list):
-                    job_params = []
-                    for param_dict in params_list:
-                        if isinstance(param_dict, dict):
-                            job_param = JobParameterDefinition(
-                                name=param_dict.get("name"),
-                                default=param_dict.get("default"),
-                            )
-                            job_params.append(job_param)
-                        else:
-                            job_params.append(param_dict)
-                    job_settings.parameters = job_params
+                    job_settings.parameters = _process_parameters(params_list)
                 else:
                     job_settings.parameters = params_list
 
@@ -1002,7 +1169,7 @@ class JobOrchestrator:
                 job_name,
                 stored_job_id,
             )
-            self._store_job_id(job_name, stored_job_id)
+            self._store_job_id(resource_id, job_name, stored_job_id)
             return stored_job_id
 
         # Create new job
@@ -1043,155 +1210,33 @@ class JobOrchestrator:
                 # Add tags, job_clusters, environments, and notification_settings if specified
                 if job_settings_config.get("tags"):
                     job_settings_kwargs["tags"] = job_settings_config["tags"]
+
+                # Process job clusters
                 job_clusters_config = job_settings_config.get("job_clusters")
                 if job_clusters_config and isinstance(job_clusters_config, list):
-                    job_settings_kwargs["job_clusters"] = job_clusters_config
+                    job_clusters_list = _process_job_clusters(job_clusters_config, job_name)
+                    if job_clusters_list:
+                        job_settings_kwargs["job_clusters"] = job_clusters_list
+
+                # Process environments
                 environments_config = job_settings_config.get("environments")
                 if environments_config and isinstance(environments_config, list):
-                    environments_list = []
-                    for env_dict in environments_config:
-                        if isinstance(env_dict, dict):
-                            if JobEnvironment and ComputeEnvironment:
-                                try:
-                                    spec_dict = env_dict.get("spec", {})
-                                    if spec_dict:
-                                        spec = ComputeEnvironment(**spec_dict)
-                                        env = JobEnvironment(environment_key=env_dict["environment_key"], spec=spec)
-                                        environments_list.append(env)
-                                except Exception:
-                                    environments_list.append(env_dict)
-                            else:
-                                environments_list.append(env_dict)
-                        elif hasattr(env_dict, "as_dict"):
-                            environments_list.append(env_dict)
-                        else:
-                            environments_list.append(env_dict)
+                    environments_list = _process_environments(environments_config)
                     if environments_list:
                         job_settings_kwargs["environments"] = environments_list
+
+                # Process notification settings
                 notif_config = job_settings_config.get("notification_settings")
                 if notif_config and isinstance(notif_config, dict):
-                    email_notif_obj = None
-                    if "email_notifications" in notif_config:
-                        email_config = notif_config["email_notifications"]
-                        if isinstance(email_config, dict):
-                            email_notif_obj = JobEmailNotifications(
-                                on_start=email_config.get("on_start", []),
-                                on_success=email_config.get("on_success", []),
-                                on_failure=email_config.get("on_failure", []),
-                                on_duration_warning_threshold_exceeded=email_config.get(
-                                    "on_duration_warning_threshold_exceeded", []
-                                ),
-                            )
-                    job_settings_kwargs["notification_settings"] = TaskNotificationSettings(
-                        no_alert_for_skipped_runs=notif_config.get("no_alert_for_skipped_runs"),
-                        no_alert_for_canceled_runs=notif_config.get("no_alert_for_canceled_runs"),
-                        alert_on_last_attempt=notif_config.get("alert_on_last_attempt"),
-                    )
-                    if email_notif_obj:
-                        job_settings_kwargs["notification_settings"].email_notifications = email_notif_obj
+                    job_settings_kwargs["notification_settings"] = _process_notification_settings(notif_config)
 
+                # Process parameters
                 if job_settings_config.get("parameters"):
                     params_list = job_settings_config["parameters"]
                     if isinstance(params_list, list):
-                        job_params = []
-                        for param_dict in params_list:
-                            if isinstance(param_dict, dict):
-                                job_param = JobParameterDefinition(
-                                    name=param_dict.get("name"),
-                                    default=param_dict.get("default"),
-                                )
-                                job_params.append(job_param)
-                            else:
-                                job_params.append(param_dict)
-                        job_settings_kwargs["parameters"] = job_params
+                        job_settings_kwargs["parameters"] = _process_parameters(params_list)
                     else:
                         job_settings_kwargs["parameters"] = params_list
-
-                if "job_clusters" in job_settings_kwargs:
-                    job_clusters_list = []
-                    for cluster_dict in job_settings_kwargs["job_clusters"]:
-                        new_cluster_dict = cluster_dict.get("new_cluster", {})
-
-                        if ClusterSpec and new_cluster_dict:
-                            aws_attrs_dict = new_cluster_dict.pop("aws_attributes", None)
-                            aws_attrs_obj = None
-                            if AwsAttributes and aws_attrs_dict:
-                                try:
-                                    aws_attrs_dict_copy = aws_attrs_dict.copy()
-                                    if "availability" in aws_attrs_dict_copy and AwsAvailability:
-                                        availability_str = aws_attrs_dict_copy["availability"]
-                                        if isinstance(availability_str, str):
-                                            aws_attrs_dict_copy["availability"] = AwsAvailability(availability_str)
-                                    if "ebs_volume_type" in aws_attrs_dict_copy and EbsVolumeType:
-                                        ebs_type_str = aws_attrs_dict_copy["ebs_volume_type"]
-                                        if isinstance(ebs_type_str, str):
-                                            aws_attrs_dict_copy["ebs_volume_type"] = EbsVolumeType(ebs_type_str)
-                                    aws_attrs_obj = AwsAttributes(**aws_attrs_dict_copy)
-                                except Exception:
-                                    new_cluster_dict["aws_attributes"] = aws_attrs_dict
-
-                            azure_attrs_dict = new_cluster_dict.pop("azure_attributes", None)
-                            azure_attrs_obj = None
-                            if AzureAttributes and azure_attrs_dict:
-                                try:
-                                    azure_attrs_dict_copy = azure_attrs_dict.copy()
-                                    if "availability" in azure_attrs_dict_copy and AzureAvailability:
-                                        availability_str = azure_attrs_dict_copy["availability"]
-                                        if isinstance(availability_str, str):
-                                            azure_attrs_dict_copy["availability"] = AzureAvailability(availability_str)
-                                    azure_attrs_obj = AzureAttributes(**azure_attrs_dict_copy)
-                                except Exception:
-                                    new_cluster_dict["azure_attributes"] = azure_attrs_dict
-
-                            gcp_attrs_dict = new_cluster_dict.pop("gcp_attributes", None)
-                            gcp_attrs_obj = None
-                            if GcpAttributes and gcp_attrs_dict:
-                                try:
-                                    gcp_attrs_dict_copy = gcp_attrs_dict.copy()
-                                    if "availability" in gcp_attrs_dict_copy and GcpAvailability:
-                                        availability_str = gcp_attrs_dict_copy["availability"]
-                                        if isinstance(availability_str, str):
-                                            gcp_attrs_dict_copy["availability"] = GcpAvailability(availability_str)
-                                    gcp_attrs_obj = GcpAttributes(**gcp_attrs_dict_copy)
-                                except Exception:
-                                    new_cluster_dict["gcp_attributes"] = gcp_attrs_dict
-
-                            try:
-                                if aws_attrs_obj:
-                                    new_cluster_dict["aws_attributes"] = aws_attrs_obj
-
-                                if azure_attrs_obj:
-                                    new_cluster_dict["azure_attributes"] = azure_attrs_obj
-
-                                if gcp_attrs_obj:
-                                    new_cluster_dict["gcp_attributes"] = gcp_attrs_obj
-
-                                if "data_security_mode" in new_cluster_dict and DataSecurityMode:
-                                    data_security_str = new_cluster_dict["data_security_mode"]
-                                    if isinstance(data_security_str, str):
-                                        new_cluster_dict["data_security_mode"] = DataSecurityMode(data_security_str)
-
-                                if "runtime_engine" in new_cluster_dict and RuntimeEngine:
-                                    runtime_str = new_cluster_dict["runtime_engine"]
-                                    if isinstance(runtime_str, str):
-                                        new_cluster_dict["runtime_engine"] = RuntimeEngine(runtime_str)
-
-                                new_cluster_obj = ClusterSpec(**new_cluster_dict)
-                                cluster_dict["new_cluster"] = new_cluster_obj
-
-                                job_cluster = JobCluster(**cluster_dict)
-                                job_clusters_list.append(job_cluster)
-                            except Exception as e:
-                                logger.warning(
-                                    f"Job '{job_name}': Failed to create job cluster "
-                                    f"'{cluster_dict.get('job_cluster_key')}': {e}"
-                                )
-                        else:
-                            job_cluster = JobCluster(**cluster_dict)
-                            job_clusters_list.append(job_cluster)
-
-                    if job_clusters_list:
-                        job_settings_kwargs["job_clusters"] = job_clusters_list
 
                 created_job = self.workspace_client.jobs.create(**job_settings_kwargs)
 
@@ -1205,7 +1250,7 @@ class JobOrchestrator:
                     created_job_id,
                 )
 
-                self._store_job_id(job_name, created_job_id)
+                self._store_job_id(resource_id, job_name, created_job_id)
 
                 # Auto-run newly created jobs if default_pause_status=False
                 # Only for jobs without schedule/trigger/continuous (manual/on-demand jobs)
@@ -1242,6 +1287,7 @@ class JobOrchestrator:
         self,
         default_pause_status: bool = False,
         yaml_path: Optional[str] = None,
+        var: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """Create and optionally run jobs.
 
@@ -1282,7 +1328,7 @@ class JobOrchestrator:
                 # Detect path type and load accordingly
                 if yaml_path.startswith("/Volumes/"):
                     # Load from Unity Catalog volume
-                    tasks_loaded, job_names = self.sync_from_volume(yaml_path)
+                    tasks_loaded, job_names = self.sync_from_volume(yaml_path, var=var)
                     jobs_to_process = job_names
                     logger.info(
                         "Loaded %d tasks from volume: %s (Jobs: %s)",
@@ -1292,7 +1338,7 @@ class JobOrchestrator:
                     )
                 elif yaml_path.endswith((".yaml", ".yml")):
                     # Load from specific YAML file
-                    tasks_loaded, job_names = self.metadata_manager.load_yaml(yaml_path)
+                    tasks_loaded, job_names = self.metadata_manager.load_yaml(yaml_path, var=var)
                     jobs_to_process = job_names
                     logger.info(
                         "Loaded %d tasks from YAML file: %s (Jobs: %s)",
@@ -1306,7 +1352,7 @@ class JobOrchestrator:
 
                     if os.path.isdir(yaml_path):
                         # Load from folder (all YAML files in folder)
-                        tasks_loaded, job_names = self.metadata_manager.load_from_folder(yaml_path)
+                        tasks_loaded, job_names = self.metadata_manager.load_from_folder(yaml_path, var=var)
                         jobs_to_process = job_names
                         logger.info(
                             "Loaded %d tasks from folder: %s (Jobs: %s)",
@@ -1326,43 +1372,60 @@ class JobOrchestrator:
                 )
                 return []
             except Exception as e:
-                logger.warning(
-                    "Failed to load from path: %s. Error: %s. No jobs will be processed.",
-                    yaml_path,
-                    str(e),
-                )
+                error_msg = str(e)
+                if "Failed to load YAML files from" in error_msg and "Error in file" in error_msg:
+                    import re
+
+                    match = re.search(r"Error in file '[^']+': (.+?)\. No data", error_msg)
+                    if match:
+                        core_error = match.group(1).rstrip(".")  # Remove trailing period
+                        logger.error(
+                            "Failed to load YAML from '%s': %s. No jobs will be processed.",
+                            yaml_path,
+                            core_error,
+                        )
+                    else:
+                        logger.error("Failed to load from '%s': %s. No jobs will be processed.", yaml_path, error_msg)
+                else:
+                    logger.error("Failed to load from '%s': %s. No jobs will be processed.", yaml_path, error_msg)
                 return []
 
-        # Get jobs to process
+        # Get resource_ids to process
         if jobs_to_process is not None:
-            # Only process jobs that were loaded from yaml_path
-            jobs = jobs_to_process
-            if not jobs:
+            # Only process jobs that were loaded from yaml_path (these are resource_ids now)
+            resource_ids = jobs_to_process
+            if not resource_ids:
                 logger.warning("No jobs found in provided path '%s'", yaml_path)
                 return []
         else:
-            # Process all jobs in control table
-            jobs = self.metadata_manager.get_all_jobs()
+            # Process all jobs in control table (get distinct resource_ids)
+            resource_ids = self.metadata_manager.get_all_jobs()
 
-        if not jobs:
+        if not resource_ids:
             logger.warning("No jobs found in control table '%s'", self.control_table)
             return []
 
         created_jobs = []
         failed_jobs = []
 
-        for job_name in jobs:
+        for resource_id in resource_ids:
             try:
-                job_id = self.create_or_update_job(job_name, default_pause_status=default_pause_status)
-                created_jobs.append({"job": job_name, "job_id": job_id})
+                job_id = self.create_or_update_job(resource_id, default_pause_status=default_pause_status)
+                # Get job_name for logging
+                spark = _get_spark()
+                first_task = (
+                    spark.table(self.control_table).filter(F.col("resource_id") == resource_id).limit(1).collect()
+                )
+                job_name = _task_row_to_dict(first_task[0])["job_name"] if first_task else resource_id
+                created_jobs.append({"resource_id": resource_id, "job_name": job_name, "job_id": job_id})
 
             except Exception as e:
                 logger.error(
-                    "Job '%s': Failed to create/run job: %s",
-                    job_name,
+                    "Job (resource_id='%s'): Failed to create/run job: %s",
+                    resource_id,
                     str(e),
                 )
-                failed_jobs.append({"job": job_name, "error": str(e)})
+                failed_jobs.append({"resource_id": resource_id, "error": str(e)})
 
         if failed_jobs:
             logger.warning(

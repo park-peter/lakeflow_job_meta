@@ -11,13 +11,17 @@ A metadata-driven framework for orchestrating Databricks Lakeflow Jobs. Package 
 ## Features
 
 - ✅ **Dynamic Job Generation**: Automatically creates/updates Databricks jobs from metadata
+- ✅ **Variable Substitution**: Use `${var.name}` syntax for dynamic YAML templates with per-job error isolation
+- ✅ **Resource ID Tracking**: Stable job tracking independent of job name changes
 - ✅ **Continuous Monitoring**: Automatically detects metadata changes and updates jobs
 - ✅ **Multiple Task Types**: Support for Notebook, SQL Query, SQL File, Python Wheel, Spark JAR, Pipeline, and dbt tasks
 - ✅ **Advanced Task Features**: Support for run_if conditions, job clusters, environments, and notifications
+- ✅ **Trigger and Schedule Support**: File arrival, table update, periodic triggers, and cron schedules with automatic enum conversion
 - ✅ **Delta Table as Source of Truth**: Manage metadata directly in Delta tables
 - ✅ **YAML Support**: YAML file ingestion for bulk updates
 - ✅ **Dependency Management**: Handles execution order and task dependencies
 - ✅ **Job Lifecycle**: Tracks and manages job IDs in Delta tables
+- ✅ **Robust Error Handling**: Job-level error isolation ensures invalid jobs don't block valid ones
 
 ## Architecture
 
@@ -89,7 +93,7 @@ pip install lakeflow-jobs-meta
 pip install -e .
 
 # Or install from wheel
-pip install dist/lakeflow_jobs_meta-0.1.0-py3-none-any.whl
+pip install dist/lakeflow_jobs_meta-0.2.0-py3-none-any.whl
 ```
 
 ### Quick Example
@@ -97,22 +101,89 @@ pip install dist/lakeflow_jobs_meta-0.1.0-py3-none-any.whl
 ```python
 import lakeflow_jobs_meta as jm
 
-# Load metadata from YAML file and create/update those jobs
+# Example 1: Load metadata from YAML with variables
+vars = {
+    'env': 'prod',
+    'warehouse_id': 'abc123',
+    'catalog': 'bronze'
+}
+
 jobs = jm.create_or_update_jobs(
     yaml_path="/Workspace/path/to/metadata.yaml",
-    control_table="catalog.schema.etl_control"
+    control_table="catalog.schema.etl_control",
+    var=vars
 )
 
-# Or load from a folder (all YAML files)
+# Example 2: Load from folder (all YAML files)
 jobs = jm.create_or_update_jobs(
     yaml_path="/Workspace/path/to/metadata/",
     control_table="catalog.schema.etl_control"
 )
 
-# Or create/update all jobs in control table
+# Example 3: Create/update all jobs in control table
 jobs = jm.create_or_update_jobs(
     control_table="catalog.schema.etl_control"
 )
+```
+
+### YAML Format
+
+Jobs are defined as dictionary entries with resource IDs as keys:
+
+```yaml
+jobs:
+  # resource_id is the YAML dict key
+  customer_etl_pipeline:
+    name: "Customer ETL - Production"  # Optional: Databricks job name (defaults to resource_id)
+    description: "Daily customer data pipeline"
+    schedule:
+      quartz_cron_expression: "0 0 2 * * ?"
+      timezone_id: "UTC"
+    tasks:
+      - task_key: "extract_customers"
+        task_type: "sql_query"
+        warehouse_id: "abc123"
+        sql_query: "SELECT * FROM bronze.raw.customers"
+```
+
+### Variable Substitution
+
+Use `${var.name}` syntax for dynamic values anywhere in your YAML:
+
+```yaml
+jobs:
+  etl_${var.env}_${var.source}:
+    name: "ETL Pipeline - ${var.source} (${var.env})"
+    tasks:
+      - task_key: "extract_${var.source}"
+        task_type: "sql_query"
+        warehouse_id: "${var.warehouse_id}"
+        sql_query: "SELECT * FROM ${var.catalog}.${var.schema}.${var.source}"
+```
+
+Pass variables when loading:
+
+```python
+vars = {
+    'env': 'prod',
+    'source': 'customers',
+    'warehouse_id': 'abc123',
+    'catalog': 'bronze',
+    'schema': 'raw'
+}
+
+jobs = jm.create_or_update_jobs(
+    yaml_path="/path/to/template.yaml",
+    control_table="catalog.schema.control",
+    var=vars
+)
+```
+
+**Important Notes**:
+- Variable substitution happens **per-job** after YAML parsing
+- Comments containing `${var.xxx}` won't cause errors
+- Undefined variables will **skip that job** with a warning and continue processing other jobs
+- Use `${var.name}` syntax (curly braces), not `$(var.name)` (parentheses)
 ```
 
 ### Usage as a Lakeflow Jobs Task (Recommended)
@@ -264,7 +335,8 @@ The `pause_status` is set **within** the `continuous`, `schedule`, or `trigger` 
 
 ```yaml
 jobs:
-  - job_name: "scheduled_job"
+  scheduled_job:
+    name: "Scheduled Job"
     continuous:
       pause_status: UNPAUSED  # Explicit - overrides default_pause_status
       task_retry_mode: ON_FAILURE
@@ -272,7 +344,8 @@ jobs:
       - task_key: "my_task"
         # ...
   
-  - job_name: "cron_job"
+  cron_job:
+    name: "Cron Job"
     schedule:
       quartz_cron_expression: "0 0 2 * * ?"
       timezone_id: "America/Los_Angeles"
@@ -309,7 +382,8 @@ If you need to allow UI editing for specific jobs, you can set `edit_mode: EDITA
 
 ```yaml
 jobs:
-  - job_name: "experimental_job"
+  experimental_job:
+    name: "Experimental Job"
     edit_mode: EDITABLE  # Allow UI editing for this job
     tasks:
       - task_key: "my_task"
@@ -359,6 +433,22 @@ All tests use pytest with mocking for external dependencies (Databricks SDK, Spa
 
 ## Metadata Schema
 
+### YAML Structure
+
+Jobs are defined as a dictionary where each key is a unique `resource_id`:
+
+```yaml
+jobs:
+  <resource_id>:        # Unique stable identifier (e.g., customer_etl_pipeline)
+    name: <string>      # Optional: Databricks job display name (defaults to resource_id)
+    description: <string>
+    # ... other job-level configuration
+    tasks:
+      - task_key: <string>
+        task_type: <string>
+        # ... task configuration
+```
+
 ### Job-Level Configuration
 
 Each job in your YAML is defined with the following structure:
@@ -367,13 +457,14 @@ Each job in your YAML is defined with the following structure:
 
 | Parameter | Type | Description | Example |
 |-----------|------|-------------|---------|
-| `job_name` | String | Unique identifier for the job | `"my_pipeline"` |
+| `resource_id` | String (YAML key) | Unique identifier for the job | `customer_etl_pipeline` |
 | `tasks` | List | List of task definitions (see Task Configuration below) | See Task Configuration |
 
 #### Optional Fields
 
 | Parameter | Type | Default | Description | Possible Values |
 |-----------|------|---------|-------------|-----------------|
+| `name` | String | `resource_id` | Databricks job display name | Any string |
 | `description` | String | None | Human-readable description of the job | Any string |
 | `timeout_seconds` | Integer | `7200` | Maximum time the entire job can run (seconds) | Any positive integer |
 | `max_concurrent_runs` | Integer | `1` | Maximum number of concurrent runs allowed | Any positive integer |
@@ -555,7 +646,8 @@ The `run_if` parameter controls when a task executes based on dependency outcome
 
 ```yaml
 jobs:
-  - job_name: "etl_pipeline"
+  customer_etl_pipeline:
+    name: "Customer ETL Pipeline - Production"
     description: "Daily ETL pipeline for customer data"
     timeout_seconds: 7200
     max_concurrent_runs: 1
@@ -601,12 +693,13 @@ jobs:
 
 ### Control Table Schema
 
-The control table has the following schema:
+The control table stores job and task metadata with the following schema:
 
 ```sql
 CREATE TABLE control_table (
-    job_name STRING,              -- Job name (from job_name in YAML)
-    task_key STRING,              -- Unique task identifier
+    resource_id STRING,           -- Stable tracking identifier (YAML dict key)
+    job_name STRING,              -- Databricks job display name (from 'name' field or defaults to resource_id)
+    task_key STRING,              -- Unique task identifier within the job
     depends_on STRING,            -- JSON array of task_key strings this task depends on
     task_type STRING,             -- Task type: notebook, sql_query, sql_file, python_wheel, spark_jar, pipeline, or dbt
     job_config STRING,            -- JSON string with job-level settings (tags, parameters, timeout_seconds, etc.)
@@ -619,22 +712,25 @@ CREATE TABLE control_table (
 )
 ```
 
+**Key Concepts**:
+- **`resource_id`**: The stable tracking identifier defined as the YAML dictionary key. This never changes and is used to track job history in the control table.
+- **`job_name`**: The display name shown in Databricks. Defaults to `resource_id` if the `name` field is not specified. Can be changed via the `name` field without losing job history.
+
 ### Jobs Table Schema
 
-The jobs tracking table has the following schema:
+The jobs tracking table maintains the mapping between resource IDs and Databricks job IDs:
 
 ```sql
 CREATE TABLE jobs_table (
-    job_name STRING,              -- Job name (same as job_name in control table)
+    resource_id STRING,           -- Stable tracking identifier (same as control table)
     job_id BIGINT,                -- Databricks job ID
+    job_name STRING,              -- Databricks job display name (for reference)
     created_by STRING,            -- Username who created the record
     created_timestamp TIMESTAMP DEFAULT current_timestamp(),
     updated_by STRING,            -- Username who last updated the record
     updated_timestamp TIMESTAMP DEFAULT current_timestamp()
 )
 ```
-
-**Note:** `job_name` in the jobs table is the same as `job_name` in the control table. Both refer to the same job name from the YAML `job_name` field.
 
 ## Task Types and Parameters
 
@@ -819,6 +915,135 @@ See `examples/metadata_examples.yaml` for comprehensive examples including:
 - Bronze to Silver transformations
 - Mixed task type pipelines
 - End-to-end data pipelines
+
+## Error Handling and Troubleshooting
+
+### Job-Level Error Isolation (Single File)
+
+When loading a single YAML file, the framework handles errors at the job level, ensuring that one invalid job doesn't prevent other jobs from being processed:
+
+**Variable Substitution Errors**:
+```
+Failed to load job 'My Job' (resource_id='job_${var.undefined}'): 
+  Variable substitution failed: Variable '${undefined}' is referenced 
+  but not provided in variables dict. Available variables: ['env', 'catalog']
+
+Failed to load 1 job(s). Continuing with 5 valid job(s).
+```
+
+**Common Error Scenarios** (single file):
+1. **Undefined variable**: Job is skipped, other jobs continue
+2. **Invalid task type**: Job is skipped, other jobs continue
+3. **Circular dependencies**: Job is skipped, other jobs continue
+4. **Missing required fields**: Job is skipped, other jobs continue
+
+### Atomic Multi-File Loading (Folder/Volume)
+
+When loading multiple YAML files using `load_from_folder()` or `sync_from_volume()`, the loading process is **atomic**:
+
+**All-or-Nothing Behavior**:
+- ✅ Phase 1: ALL files are parsed and validated in memory
+- ✅ Phase 2: Only if ALL files are valid, a single database write occurs
+- ❌ If ANY file has an error, NO data is written to the control table
+- 📋 Detailed error message indicates which file caused the failure
+
+**Example Error (Multi-File)**:
+```
+Failed to load YAML files from folder '/Workspace/metadata/'. 
+Error in file '/Workspace/metadata/invalid_job.yaml': 
+  Duplicate resource_id 'etl_pipeline' found across multiple YAML files. 
+  This resource_id appears in 'invalid_job.yaml' and was already defined in a previous file. 
+  Each resource_id must be unique across all YAML files. 
+No data has been loaded to the control table.
+```
+
+**Why Atomic Loading?**
+- Prevents partial data corruption (some files loaded, others failed)
+- Ensures consistency across your job definitions
+- Makes debugging easier (all files must be valid together)
+- Protects against duplicate resource_ids across files
+
+**Validation Errors That Stop Multi-File Loading**:
+1. **Duplicate resource_id across files**: Each resource_id must be unique globally
+2. **Invalid YAML syntax**: Any file with malformed YAML
+3. **Validation errors**: Missing required fields, circular dependencies, etc.
+4. **Variable substitution errors**: Undefined variables in ANY job
+
+**Best Practice for Multi-File Loading**:
+```python
+try:
+    tasks, resource_ids = jm.load_from_folder(
+        folder_path="/Workspace/metadata/",
+        var={'env': 'prod', 'catalog': 'bronze'}
+    )
+    print(f"✅ Successfully loaded {tasks} tasks from {len(resource_ids)} jobs")
+except RuntimeError as e:
+    print(f"❌ Failed to load YAML files: {e}")
+    # Fix the problematic file and retry
+    # No partial data was written
+```
+
+### Checking Results
+
+**Single File Loading**:
+```python
+jobs = jm.create_or_update_jobs(
+    yaml_path="/path/to/metadata.yaml",
+    control_table="catalog.schema.control",
+    var=vars
+)
+
+# jobs contains list of successfully processed jobs
+# Check logs for warnings about skipped jobs
+```
+
+**Multi-File Loading**:
+```python
+try:
+    jobs = jm.create_or_update_jobs(
+        yaml_path="/Workspace/metadata/",  # folder or volume
+        control_table="catalog.schema.control",
+        var=vars
+    )
+    # All files loaded successfully
+    print(f"✅ Loaded {len(jobs)} jobs")
+except RuntimeError as e:
+    # No files were loaded
+    print(f"❌ Failed: {e}")
+```
+
+### Variable Substitution Best Practices
+
+1. **Always define all variables**: Ensure all referenced variables are provided in the `var` dict
+2. **Use descriptive variable names**: `${var.environment}` instead of `${var.e}`
+3. **Validate variables before use**: Check that your `var` dict contains all required keys
+4. **Use correct syntax**: `${var.name}` with curly braces, not `$(var.name)` with parentheses
+5. **Test with variable values**: Test your YAML with actual variable values before deployment
+
+**Example**:
+```python
+# Define all variables upfront
+vars = {
+    'env': 'prod',
+    'source': 'customers',
+    'warehouse_id': 'abc123',
+    'catalog': 'bronze',
+    'schema': 'raw'
+}
+
+# Validate variables match what's in YAML
+required_vars = ['env', 'source', 'warehouse_id', 'catalog', 'schema']
+missing = [v for v in required_vars if v not in vars]
+if missing:
+    raise ValueError(f"Missing required variables: {missing}")
+
+# Now load jobs
+jobs = jm.create_or_update_jobs(
+    yaml_path="/path/to/template.yaml",
+    control_table="catalog.schema.control",
+    var=vars
+)
+```
 
 ## Best Practices
 
