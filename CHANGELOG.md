@@ -29,8 +29,9 @@ jobs:
   - Use `${var.variable_name}` anywhere in YAML for dynamic values
   - Compatible with Databricks Asset Bundles (DABs) syntax
   - Pass variables via `var` parameter: `jm.create_or_update_jobs(var={'env': 'prod'})`
-  - Strict validation: raises error if variable is undefined
-  - Works everywhere: job names, task configs, SQL queries, file paths
+  - Substitution happens per-job (comments with `${var.xxx}` won't cause errors)
+  - Variable substitution errors are handled at job level (skip invalid job, continue with others)
+  - Works everywhere: job names, resource IDs, task configs, SQL queries, file paths
   - Example:
     ```yaml
     jobs:
@@ -51,23 +52,64 @@ jobs:
         name: "Customer ETL Pipeline - Production"  # job_name in Databricks
     ```
 
+- **Enhanced Trigger and Schedule Support**
+  - Automatic conversion of `pause_status` string to `PauseStatus` enum
+  - Proper handling of nested trigger configurations:
+    - `file_arrival` → `FileArrivalTriggerConfiguration`
+    - `periodic` → `PeriodicTriggerConfiguration`
+    - `table_update` → `TableUpdateTriggerConfiguration`
+  - Schedule `pause_status` properly converted for `CronSchedule`
+
+- **Job Parameters Serialization**
+  - `JobParameterDefinition` objects now properly serialize to dicts
+  - Fixes JSON serialization errors when using job-level parameters
+  - Supports both list and dict parameter formats
+
 ### Changed
 
+- **Variable Substitution Timing**
+  - Now happens per-job after YAML parsing (not on raw YAML content)
+  - Prevents errors from comments containing `${var.xxx}` syntax
+  - Better error isolation: invalid variables in one job don't affect others
 - **YAML Structure**: Jobs are now dict entries instead of list items (BREAKING)
 - **Control Table Schema**: Added `resource_id` column as first column
 - **Jobs Tracking Table Schema**: Added `resource_id` column
 - **API Functions**: All load functions now return `resource_ids` instead of `job_names`
 - **Orchestrator**: Uses `resource_id` for job tracking, `job_name` for Databricks API
+- Strict validation: Duplicate `resource_id` within or across YAML files raises an error
+- Multiple jobs can have the same `job_name` (Databricks allows duplicate display names)
+
+### Fixed
+
+- **Trigger Settings Serialization**: Fixed "'dict' object has no attribute 'as_dict'" error
+  - Nested trigger configurations now properly converted to SDK objects
+  - `file_arrival`, `periodic`, and `table_update` dicts converted to proper SDK types
+- **Job Parameters JSON Serialization**: Fixed "Object of type JobParameterDefinition is not JSON serializable" error
+  - `JobSettingsWithDictTasks.as_dict()` now properly serializes parameters list
+  - Each `JobParameterDefinition` converted to dict before JSON serialization
+- **Schedule and Trigger Pause Status**: Fixed "'str' object has no attribute 'value'" error
+  - `pause_status` strings now converted to `PauseStatus` enum before SDK object creation
+- **Variable Substitution Error Handling**: Variable errors now handled at job level
+  - Invalid variables in one job no longer fail entire YAML load
+  - Failed jobs are skipped with warnings, valid jobs continue processing
 
 ### Technical Details
 
 - Added `substitute_variables()` function in `utils.py` with regex pattern `\$\{var\.([a-zA-Z_][a-zA-Z0-9_]*)\}`
-- Updated `MetadataManager.load_yaml()` to accept `variables` parameter
-- Updated all public API functions to accept `var` parameter
+- Variable substitution moved inside per-job try-catch block for better error isolation
+- Imported trigger configuration classes: `FileArrivalTriggerConfiguration`, `PeriodicTriggerConfiguration`, `TableUpdateTriggerConfiguration`
+- Enhanced `_convert_job_setting_to_sdk_object()` to handle nested trigger objects and enum conversions
+- Updated `JobSettingsWithDictTasks.as_dict()` to serialize `JobParameterDefinition` lists
 - Updated YAML parser to iterate over dict: `for resource_id, job in config["jobs"].items()`
 - Updated MERGE statements to use `resource_id` as key
 - Updated `create_or_update_job()` signature to accept `resource_id` instead of `job_name`
 - Updated `get_all_jobs()` to return list of `resource_ids`
+- **Atomic Multi-File Loading**: Refactored `load_from_folder()` and `sync_from_volume()` to be truly atomic
+  - Phase 1: Parse and validate ALL files in memory (no database writes)
+  - Phase 2: Single MERGE operation for all validated data
+  - If any file has errors (validation, duplicates, syntax), NO data is written
+  - Prevents partial loads where some files succeed and others fail mid-process
+  - Better error messages indicating exactly which file caused the failure
 
 ### Migration Guide
 

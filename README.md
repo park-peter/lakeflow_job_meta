@@ -11,15 +11,17 @@ A metadata-driven framework for orchestrating Databricks Lakeflow Jobs. Package 
 ## Features
 
 - ✅ **Dynamic Job Generation**: Automatically creates/updates Databricks jobs from metadata
-- ✅ **Variable Substitution**: Use `${var.name}` syntax for dynamic YAML templates
+- ✅ **Variable Substitution**: Use `${var.name}` syntax for dynamic YAML templates with per-job error isolation
 - ✅ **Resource ID Tracking**: Stable job tracking independent of job name changes
 - ✅ **Continuous Monitoring**: Automatically detects metadata changes and updates jobs
 - ✅ **Multiple Task Types**: Support for Notebook, SQL Query, SQL File, Python Wheel, Spark JAR, Pipeline, and dbt tasks
 - ✅ **Advanced Task Features**: Support for run_if conditions, job clusters, environments, and notifications
+- ✅ **Trigger and Schedule Support**: File arrival, table update, periodic triggers, and cron schedules with automatic enum conversion
 - ✅ **Delta Table as Source of Truth**: Manage metadata directly in Delta tables
 - ✅ **YAML Support**: YAML file ingestion for bulk updates
 - ✅ **Dependency Management**: Handles execution order and task dependencies
 - ✅ **Job Lifecycle**: Tracks and manages job IDs in Delta tables
+- ✅ **Robust Error Handling**: Job-level error isolation ensures invalid jobs don't block valid ones
 
 ## Architecture
 
@@ -146,7 +148,7 @@ jobs:
 
 ### Variable Substitution
 
-Use `${var.name}` syntax for dynamic values:
+Use `${var.name}` syntax for dynamic values anywhere in your YAML:
 
 ```yaml
 jobs:
@@ -175,6 +177,13 @@ jobs = jm.create_or_update_jobs(
     control_table="catalog.schema.control",
     var=vars
 )
+```
+
+**Important Notes**:
+- Variable substitution happens **per-job** after YAML parsing
+- Comments containing `${var.xxx}` won't cause errors
+- Undefined variables will **skip that job** with a warning and continue processing other jobs
+- Use `${var.name}` syntax (curly braces), not `$(var.name)` (parentheses)
 ```
 
 ### Usage as a Lakeflow Jobs Task (Recommended)
@@ -906,6 +915,135 @@ See `examples/metadata_examples.yaml` for comprehensive examples including:
 - Bronze to Silver transformations
 - Mixed task type pipelines
 - End-to-end data pipelines
+
+## Error Handling and Troubleshooting
+
+### Job-Level Error Isolation (Single File)
+
+When loading a single YAML file, the framework handles errors at the job level, ensuring that one invalid job doesn't prevent other jobs from being processed:
+
+**Variable Substitution Errors**:
+```
+Failed to load job 'My Job' (resource_id='job_${var.undefined}'): 
+  Variable substitution failed: Variable '${undefined}' is referenced 
+  but not provided in variables dict. Available variables: ['env', 'catalog']
+
+Failed to load 1 job(s). Continuing with 5 valid job(s).
+```
+
+**Common Error Scenarios** (single file):
+1. **Undefined variable**: Job is skipped, other jobs continue
+2. **Invalid task type**: Job is skipped, other jobs continue
+3. **Circular dependencies**: Job is skipped, other jobs continue
+4. **Missing required fields**: Job is skipped, other jobs continue
+
+### Atomic Multi-File Loading (Folder/Volume)
+
+When loading multiple YAML files using `load_from_folder()` or `sync_from_volume()`, the loading process is **atomic**:
+
+**All-or-Nothing Behavior**:
+- ✅ Phase 1: ALL files are parsed and validated in memory
+- ✅ Phase 2: Only if ALL files are valid, a single database write occurs
+- ❌ If ANY file has an error, NO data is written to the control table
+- 📋 Detailed error message indicates which file caused the failure
+
+**Example Error (Multi-File)**:
+```
+Failed to load YAML files from folder '/Workspace/metadata/'. 
+Error in file '/Workspace/metadata/invalid_job.yaml': 
+  Duplicate resource_id 'etl_pipeline' found across multiple YAML files. 
+  This resource_id appears in 'invalid_job.yaml' and was already defined in a previous file. 
+  Each resource_id must be unique across all YAML files. 
+No data has been loaded to the control table.
+```
+
+**Why Atomic Loading?**
+- Prevents partial data corruption (some files loaded, others failed)
+- Ensures consistency across your job definitions
+- Makes debugging easier (all files must be valid together)
+- Protects against duplicate resource_ids across files
+
+**Validation Errors That Stop Multi-File Loading**:
+1. **Duplicate resource_id across files**: Each resource_id must be unique globally
+2. **Invalid YAML syntax**: Any file with malformed YAML
+3. **Validation errors**: Missing required fields, circular dependencies, etc.
+4. **Variable substitution errors**: Undefined variables in ANY job
+
+**Best Practice for Multi-File Loading**:
+```python
+try:
+    tasks, resource_ids = jm.load_from_folder(
+        folder_path="/Workspace/metadata/",
+        var={'env': 'prod', 'catalog': 'bronze'}
+    )
+    print(f"✅ Successfully loaded {tasks} tasks from {len(resource_ids)} jobs")
+except RuntimeError as e:
+    print(f"❌ Failed to load YAML files: {e}")
+    # Fix the problematic file and retry
+    # No partial data was written
+```
+
+### Checking Results
+
+**Single File Loading**:
+```python
+jobs = jm.create_or_update_jobs(
+    yaml_path="/path/to/metadata.yaml",
+    control_table="catalog.schema.control",
+    var=vars
+)
+
+# jobs contains list of successfully processed jobs
+# Check logs for warnings about skipped jobs
+```
+
+**Multi-File Loading**:
+```python
+try:
+    jobs = jm.create_or_update_jobs(
+        yaml_path="/Workspace/metadata/",  # folder or volume
+        control_table="catalog.schema.control",
+        var=vars
+    )
+    # All files loaded successfully
+    print(f"✅ Loaded {len(jobs)} jobs")
+except RuntimeError as e:
+    # No files were loaded
+    print(f"❌ Failed: {e}")
+```
+
+### Variable Substitution Best Practices
+
+1. **Always define all variables**: Ensure all referenced variables are provided in the `var` dict
+2. **Use descriptive variable names**: `${var.environment}` instead of `${var.e}`
+3. **Validate variables before use**: Check that your `var` dict contains all required keys
+4. **Use correct syntax**: `${var.name}` with curly braces, not `$(var.name)` with parentheses
+5. **Test with variable values**: Test your YAML with actual variable values before deployment
+
+**Example**:
+```python
+# Define all variables upfront
+vars = {
+    'env': 'prod',
+    'source': 'customers',
+    'warehouse_id': 'abc123',
+    'catalog': 'bronze',
+    'schema': 'raw'
+}
+
+# Validate variables match what's in YAML
+required_vars = ['env', 'source', 'warehouse_id', 'catalog', 'schema']
+missing = [v for v in required_vars if v not in vars]
+if missing:
+    raise ValueError(f"Missing required variables: {missing}")
+
+# Now load jobs
+jobs = jm.create_or_update_jobs(
+    yaml_path="/path/to/template.yaml",
+    control_table="catalog.schema.control",
+    var=vars
+)
+```
 
 ## Best Practices
 
